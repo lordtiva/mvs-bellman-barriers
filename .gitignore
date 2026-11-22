@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.case3_outer_cache.json
+rust_verifier/target/
+*.dll
+*.so
+*.dylib
+*.dll.a
+*.lib
+*.pdb
+.DS_Store
+Thumbs.db
