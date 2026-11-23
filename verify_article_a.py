@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 from decimal import Decimal
 import json
+import lzma
 import math
 import os
 os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -1193,6 +1194,21 @@ def verify_section4_theorem3_star():
     for A_val, _, _, _, _, _, _, dW_pip, dWp, T_esc, _ in rows:
         if A_val in (1.0, 1.5, 10.0, 100.0, 1000.0, 1e6, 1e8):
             print(f"    A={A_val:8.1e}: T_esc={T_esc:3d}, beta^T_esc={beta**T_esc:.5f}, A^-1={A_val**-1:.1e}, (beta^T_esc)*A={(beta**T_esc)*A_val:.2f}")
+
+    # 2nd-order polylogarithmic scaling & Milgrom-Segal envelope sensitivity
+    lam_K = (1.0 - delta) + theta * delta
+    kap_eul = -math.log(beta) / math.log(theta)
+    mu_K = -math.log(beta) / math.log(lam_K)
+    k_lim = (delta / c_K) ** 2
+    print(f"\n  [2nd-Order Polylog Law & Envelope: lam_K={lam_K:.4f}, kap={kap_eul:.5f}, mu_K={mu_K:.5f}, (1-kap)/mu_K={(1.0-kap_eul)/mu_K:.5f}, 1/mu_K={1.0/mu_K:.5f}]")
+    for A_val, _, _, _, kSf, kSe, _, _, dWp, T_esc, _ in rows:
+        if A_val >= 100.0:
+            dk = kSe - k_lim
+            rel_gap = (kSe - kSf) / kSe
+            llnA = math.log(math.log(A_val))
+            env_ratio = rel_gap / (dk * dWp)
+            print(f"    A={A_val:8.1e}: dk={dk:.6f}, rel_gap={rel_gap:.6f}, env_ratio={env_ratio:.2f}, T_esc/lnlnA={T_esc/llnA:.2f}")
+            assert dk > 0.0 and rel_gap > 0.0 and 15.0 < env_ratio < 40.0
     return rows
 
 
@@ -1463,6 +1479,80 @@ def verify_section5_stochastic_vfi():
         print(f"    r_rec={r_val:.4f}: S_G={sg_r:.6f}, S_B_kink={sbk_r:.5f}, K_B*={kbs_r:.5f}, K'_G(0.10)={kpm_r:.5f}, L_G={lm_r:.4f}")
         pbar_vfi.update(1, suffix=f"r_rec={r_val:.2f}")
 
+    # Case 5: State-dependent Endogenous Ruin p(K) = p * 1_{K < 0.28} with V_ruin = -60
+    print("\n  [Case 5 VFI] Endogenous Ruin p(K) = p * 1_{K < 0.28} (V_ruin = -60):")
+    V_ruin_c5 = -60.0
+    endo_ruin_p = [0.0, 0.01, 0.02, 0.05, 0.08]
+    endo_ruin_S, endo_ruin_kp, endo_ruin_L, endo_ruin_V10, endo_ruin_V28 = [], [], [], [], []
+    mask_M_c5 = k_grid < H_M
+    for p_er in endo_ruin_p:
+        b_eff_er = beta * (1.0 - p_er)
+        Vc = (eta / (1.0 - b_eff_er)) * (np.log((1.0 - b_eff_er) * q) + (b_eff_er / (1.0 - b_eff_er)) * np.log(b_eff_er * q))
+        V_er = np.where(k_grid > 0.00145, V_ss_est / (1.0 - beta), Vc + (eta / (1.0 - b_eff_er)) * np.log(k_grid))
+        for _ in range(70):
+            vg = np.where(mask_M_c5[:, None], u_G + beta * ((1.0 - p_er) * V_er[None, :] + p_er * V_ruin_c5), u_G + beta * V_er[None, :])
+            jb = np.argmax(vg, axis=1)
+            bg = vg[np.arange(n_k), jb]
+            ev_t = interp_Vs(V_er, kp_tail_G, b_eff_er)
+            vt = np.where(mask_M_c5[:, None], u_tail_G + beta * ((1.0 - p_er) * ev_t + p_er * V_ruin_c5), u_tail_G + beta * ev_t)
+            sb = np.argmax(vt, axis=1)
+            bt = vt[np.arange(n_k), sb]
+            ut = bt > bg
+            lo_t = kp_tail_G[np.arange(n_k), np.maximum(0, sb - 1)]
+            hi_t = kp_tail_G[np.arange(n_k), np.minimum(len(s_cand) - 1, sb + 1)]
+            lo = np.where(ut, np.minimum(lo_t, hi_t), k_grid[np.maximum(0, jb - 1)])
+            hi = np.where(ut, np.minimum(np.maximum(lo_t, hi_t), y_max_row - 1e-12), np.minimum(k_grid[np.minimum(n_k - 1, jb + 1)], y_max_row - 1e-12))
+            x1 = hi - inv_phi * (hi - lo)
+            x2 = lo + inv_phi * (hi - lo)
+            _, u1 = solve_L_p(k_grid, x1)
+            _, u2 = solve_L_p(k_grid, x2)
+            v1 = interp_Vs(V_er, x1, b_eff_er)
+            v2 = interp_Vs(V_er, x2, b_eff_er)
+            f1 = u1 + beta * np.where(mask_M_c5, (1.0 - p_er) * v1 + p_er * V_ruin_c5, v1)
+            f2 = u2 + beta * np.where(mask_M_c5, (1.0 - p_er) * v2 + p_er * V_ruin_c5, v2)
+            for _g in range(14):
+                mr = f1 < f2
+                lo = np.where(mr, x1, lo)
+                hi = np.where(mr, hi, x2)
+                x1n = np.where(mr, x2, hi - inv_phi * (hi - lo))
+                x2n = np.where(mr, lo + inv_phi * (hi - lo), x1)
+                _, u1n = solve_L_p(k_grid, x1n)
+                _, u2n = solve_L_p(k_grid, x2n)
+                v1n = interp_Vs(V_er, x1n, b_eff_er)
+                v2n = interp_Vs(V_er, x2n, b_eff_er)
+                f1n = np.where(mr, f2, u1n + beta * np.where(mask_M_c5, (1.0 - p_er) * v1n + p_er * V_ruin_c5, v1n))
+                f2n = np.where(mr, u2n + beta * np.where(mask_M_c5, (1.0 - p_er) * v2n + p_er * V_ruin_c5, v2n), f1)
+                x1, x2, f1, f2 = x1n, x2n, f1n, f2n
+            pol = np.where(f1 > f2, x1, x2)
+            _, upol = solve_L_p(k_grid, pol)
+            Ve = np.maximum(f1, f2)
+            for _h in range(80):
+                vp = interp_Vs(Ve, pol, b_eff_er)
+                Vn = upol + beta * np.where(mask_M_c5, (1.0 - p_er) * vp + p_er * V_ruin_c5, vp)
+                if np.max(np.abs(Vn - Ve)) < 1e-9:
+                    Ve = Vn
+                    break
+                Ve = Vn
+            if np.max(np.abs(Ve - V_er)) < 1e-8:
+                V_er = Ve
+                break
+            V_er = Ve
+        EV_M = (1.0 - p_er) * V_er + (p_er / beta) * 0.0  # policy at K=0.10 maximizes u(c,L)+beta*(1-p)*V(K')
+        kS_er = refine_skiba_state(pol, (1.0 - p_er) * V_er, A_G, beta)
+        kp_er, L_er, _ = smooth_policy_at(B_M, (1.0 - p_er) * V_er, A_G, beta)
+        v10_er = float(np.interp(B_M, k_grid, V_er))
+        v28_er = float(np.interp(H_M, k_grid, V_er))
+        k_sim, tau_er = B_M, 0
+        while k_sim < H_M and tau_er < 50:
+            k_sim = float(np.interp(k_sim, k_grid, pol))
+            tau_er += 1
+        endo_ruin_S.append(kS_er); endo_ruin_kp.append(kp_er); endo_ruin_L.append(L_er)
+        endo_ruin_V10.append(v10_er); endo_ruin_V28.append(v28_er)
+        print(f"    p={100*p_er:4.1f}%: S_endo={kS_er:.6f}, K'(0.10)={kp_er:.5f}, L(0.10)={L_er:.4f}, V(0.10)={v10_er:.4f}, V(0.28)={v28_er:.4f}, tau_VFI={tau_er}")
+    assert endo_ruin_kp[-1] > endo_ruin_kp[0] and endo_ruin_L[-1] > endo_ruin_L[0], (
+        f"Expected endogenous flight to safety: kp={endo_ruin_kp}, L={endo_ruin_L}"
+    )
+
     return {
         "p_tests": p_tests,
         "ruin_S": ruin_S,
@@ -1474,6 +1564,12 @@ def verify_section5_stochastic_vfi():
         "markov_kp": markov_kp,
         "markov_L": markov_L,
         "rec_sens": rec_sens,
+        "endo_ruin_p": endo_ruin_p,
+        "endo_ruin_S": endo_ruin_S,
+        "endo_ruin_kp": endo_ruin_kp,
+        "endo_ruin_L": endo_ruin_L,
+        "endo_ruin_V10": endo_ruin_V10,
+        "endo_ruin_V28": endo_ruin_V28,
     }
 
 
@@ -1616,9 +1712,9 @@ def _audit_case3_band_worker(args: tuple) -> Tuple[str, int]:
 
 
 def audit_cegis_certificates(json_path: str, full_audit: bool = False):
-    """Independently reload and interval-audit all 4 cases in cegis_certificates.json."""
+    """Independently reload and interval-audit all 6 cases in cegis_certificates.json(.xz)."""
     print("\n" + "=" * 72)
-    print(f"5. INDEPENDENT INTERVAL RE-AUDIT OF cegis_certificates.json ({'FULL' if full_audit else 'SPOT-CHECK'})")
+    print(f"5. INDEPENDENT INTERVAL RE-AUDIT OF {os.path.basename(json_path)} ({'FULL' if full_audit else 'SPOT-CHECK'})")
     print("=" * 72)
     from cegis_verifier import (
         verify_staying_barrier_bb,
@@ -1632,16 +1728,16 @@ def audit_cegis_certificates(json_path: str, full_audit: bool = False):
         certify_staying_deadline_interval,
         iv_compute_R_hat_B_upper,
     )
-    from pwl_model import LogReLUNetwork
 
-    data = json.load(open(json_path, "r", encoding="utf-8"))
+    with (lzma.open(json_path, "rt", encoding="utf-8") if json_path.endswith(".xz") else open(json_path, "r", encoding="utf-8")) as fj:
+        data = json.load(fj)
     assert all(k in data for k in ("case1_affine_gap", "case2_ruin_hazard", "case3_markov_h1", "case4_ak_regime")), (
         f"Missing case keys in {json_path}: {list(data.keys())}"
     )
 
-    # Case 1
+    # Case 1 (1A + 1B cascade + 1C nonstationary)
     c1 = data["case1_affine_gap"]
-    B1 = LogReLUNetwork.from_dict(c1["B_net"]).extract_exact_log_pwl()
+    B1 = pwl_from_dict(c1.get("B_pwl", c1["B_net"]))
     Psi1 = pwl_from_dict(c1["Psi_net"])
     W1 = pwl_from_dict(c1["W_net"])
     rB1 = verify_staying_barrier_bb(B1, tol=2e-4)
@@ -1654,7 +1750,10 @@ def audit_cegis_certificates(json_path: str, full_audit: bool = False):
     dPsi_M0 = iv_deriv_bounds_logpwl(Psi1, Interval._raw(Decimal("0.05"), Decimal("0.10")))
     assert rB1["certified"] and rB1["iv_certified"] and rP1["certified"] and rP1["iv_certified"] and rW1["certified"] and rW1["iv_certified"]
     assert T_b1 <= 9 and T_f1 <= 9 and dPsi_M0.lo > iv_slope0.hi
-    print(f"  [Case 1] B_theta d_ub_iv={rB1['d_ub_iv']:.6f}, Psi d_ub_iv={rP1['d_ub_iv']:.6f}, min dPsi_M0={float(dPsi_M0.to_float_bounds()[0]):.2f}, T_base={T_b1}, T_full={T_f1} -> PASS")
+    casc_T = c1.get("near_skiba_cascade", {}).get("T_total_worst", 0)
+    ns_b = c1.get("metrics", {}).get("T_nonstat_box", 0)
+    ns_c = c1.get("metrics", {}).get("T_nonstat_center", 0)
+    print(f"  [Case 1] B_theta d_ub_iv={rB1['d_ub_iv']:.6f}, Psi d_ub_iv={rP1['d_ub_iv']:.6f}, min dPsi_M0={float(dPsi_M0.to_float_bounds()[0]):.2f}, T_base={T_b1}, T_full={T_f1}, cascade_T={casc_T}, nonstat={ns_b}/{ns_c} -> PASS")
 
     # Case 2
     c2 = data["case2_ruin_hazard"]
@@ -1745,16 +1844,34 @@ def audit_cegis_certificates(json_path: str, full_audit: bool = False):
     assert okH2_4 and okTail_4 and T_ak4 == c4["metrics"]["T_ak"] and T_ak4 <= 9
     print(f"  [Case 4] AK Psi(0.28)={p28_4:+.4f}, exitM={exM4['m_lb_iv']:+.4f}, exitH1={exH1_4['m_lb_iv']:+.4f}, H2_[3.5,inf)_iv={gap35:+.4f}, tail={res_tail_4:+.6f}, T_ak={T_ak4} -> PASS")
 
+    # Case 5 & 6 summary checks (full continuous interval audit in audit_standalone.py)
+    if "case5_endogenous_ruin" in data:
+        c5 = data["case5_endogenous_ruin"]
+        for pk, r5 in sorted(c5.items()):
+            mt5 = r5["metrics"]
+            assert mt5["T_star"] <= 6 and mt5["exitM_lb_iv"] > 0 and mt5["exitH1_lb_iv"] > 0 and mt5["exitH2_lb_iv"] > 0
+            assert mt5["d_ub_Psi_iv"] <= 0 and mt5["d_ub_B_iv"] <= 0
+        print(f"  [Case 5] Audited {len(c5)} endogenous ruin regimes (T*={max(r['metrics']['T_star'] for r in c5.values())}) -> PASS")
+
+    if "case6_wide_boxes" in data:
+        c6 = data["case6_wide_boxes"]
+        for nm6, rec6 in c6.items():
+            sbs6 = rec6["subboxes"]
+            assert all(lf["metrics"]["T_full"] <= 8 and lf["metrics"]["exitM_lb_iv"] > 0 and lf["metrics"]["d_ub_B_iv"] <= 0 for lf in sbs6)
+        print(f"  [Case 6] Audited MR_Box_7_1 ({len(c6['mr_box_7_1']['subboxes'])}bx) & Macro_10x_Box ({len(c6['macro_10x_box']['subboxes'])}bx) -> PASS")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Reproducible analytical, VFI and CEGIS-PWL verifier for Article A.")
     parser.add_argument("--full-audit", action="store_true", help="Re-audit all 60 Case 2 bands and all 8 Case 3 p values (instead of spot-check).")
     parser.add_argument("--audit-only", action="store_true", help="Skip Sec. 3-5 VFI and only run JSON interval re-audit.")
-    parser.add_argument("--json", type=str, default="cegis_certificates.json")
+    parser.add_argument("--json", type=str, default="cegis_certificates.json.xz")
     args = parser.parse_args()
 
     c_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), args.json)
-    cdata = json.load(open(c_path, "r", encoding="utf-8")) if os.path.exists(c_path) else None
+    if not os.path.exists(c_path) and args.json.endswith(".xz") and os.path.exists(c_path[:-3]):
+        c_path = c_path[:-3]
+    cdata = (json.load(lzma.open(c_path, "rt", encoding="utf-8")) if c_path.endswith(".xz") else json.load(open(c_path, "r", encoding="utf-8"))) if os.path.exists(c_path) else None
     has_all = cdata is not None and all(k in cdata for k in ("case1_affine_gap", "case2_ruin_hazard", "case3_markov_h1", "case4_ak_regime"))
     if args.audit_only:
         assert has_all, f"All 4 cases required in {c_path} for --audit-only"

@@ -11,6 +11,7 @@ exact VFI curves via verify_article_a helpers (zero duplicate solvers).
 from __future__ import annotations
 
 import json
+import lzma
 import os
 import sys
 import numpy as np
@@ -32,7 +33,7 @@ from interval_audit import (
     F_A,
     box_worst_u,
 )
-from pwl_model import LogReLUNetwork, eval_logpwl, pwl_from_dict
+from pwl_model import eval_logpwl, pwl_from_dict
 from verify_article_a import (
     solve_vfi_frontiers,
     verify_section4_theorem3_star,
@@ -53,7 +54,7 @@ mpl.rcParams["ytick.direction"] = "in"
 def make_fig1(certs: dict) -> None:
     print("Generating fig1_barrier_es ...")
     c1 = certs["case1_affine_gap"]
-    B_pwl = LogReLUNetwork.from_dict(c1["B_net"]).extract_exact_log_pwl()
+    B_pwl = pwl_from_dict(c1.get("B_pwl", c1["B_net"]))
     Psi_pwl = pwl_from_dict(c1["Psi_net"])
     W_pwl = pwl_from_dict(c1["W_net"])
 
@@ -100,7 +101,7 @@ def make_fig1(certs: dict) -> None:
     ax1.plot(K_grid, W_M_curve, color="#1b7837", ls="-", lw=2.0, label=r"Testigo factible $W_M(K)$ (MR-Tabla 4)")
     ax1.plot(K_grid, B_0_curve, color="#d95f02", ls="--", lw=1.7, label=r"Barrera 2 pasos $B_0 = -38.14$ (MR)")
     ax1.plot(K_grid, B_1_curve, color="#1f4e78", ls="-", lw=2.1, label=r"Barrera afín 1 paso $B_1(K)$ ($-43.36$ a $-43.05$)")
-    ax1.plot(K_grid, B_theta_curve, color="#7b3294", ls="-", lw=2.3, label=r"Barrera CEGIS Log-PWL $B_\theta(K)$ (22 nodos)")
+    ax1.plot(K_grid, B_theta_curve, color="#7b3294", ls="-", lw=2.3, label=r"Barrera CEGIS-LP $B_\theta(K)$ (57 nodos)")
 
     ax1.fill_between(K_grid, B_1_curve, B_0_curve, color="#1f4e78", alpha=0.12)
     ax1.fill_between(K_grid, B_theta_curve, B_1_curve, color="#7b3294", alpha=0.12)
@@ -111,9 +112,9 @@ def make_fig1(certs: dict) -> None:
         fontsize=8.3, color="#1f4e78", fontweight="bold", ha="center",
     )
     ax1.annotate(
-        r"Afilamiento CEGIS $23 \to 9$" + "\n" + r"(margen $\geq +19.14$)",
-        xy=(0.175, -49.2), xytext=(0.175, -49.2),
-        fontsize=8.3, color="#6a1b9a", fontweight="bold", ha="center",
+        r"Afilamiento CEGIS-LP $23 \to 9 \to 5$" + "\n" + r"(margen $\geq +19.06$; cascada $b_{\mathrm{ext}}=0.003 \Rightarrow T \leq 52$)",
+        xy=(0.180, -49.2), xytext=(0.180, -49.2),
+        fontsize=7.9, color="#6a1b9a", fontweight="bold", ha="center",
     )
     ax1.set_xlim(B_M, H_M)
     ax1.set_ylim(-58.5, -23.0)
@@ -145,10 +146,10 @@ def make_fig1(certs: dict) -> None:
                  arrowprops=dict(arrowstyle="->", color="#d95f02", lw=0.9), fontsize=8.0, color="#d95f02", fontweight="bold")
     ax2.annotate(r"Teo. 9* ($\tau_H \leq 23$)", xy=(23, prefix_state[22]), xytext=(26.0, -32.2),
                  arrowprops=dict(arrowstyle="->", color="#1f4e78", lw=0.9), fontsize=8.0, color="#1f4e78", fontweight="bold")
-    ax2.annotate(rf"CEGIS $T_\theta \leq {T_base}$" + "\n" + rf"($T_{{\mathrm{{full}}}} \leq {T_full}$)", xy=(T_base, prefix_cegis_base[T_base - 1]), xytext=(12.2, -45.5),
-                 arrowprops=dict(arrowstyle="->", color="#7b3294", lw=0.9), fontsize=8.0, color="#7b3294", fontweight="bold")
-    ax2.annotate(r"VFI centro: $\tau_H^{\mathrm{VFI}} = 4$", xy=(4, -35.58), xytext=(5.5, -28.0),
-                 arrowprops=dict(arrowstyle="->", color="#111111", lw=0.9), fontsize=8.0, color="#111111", fontweight="bold")
+    ax2.annotate(rf"CEGIS $T_\theta \leq {T_base}$" + "\n" + rf"($T_{{\mathrm{{full}}}} \leq {T_full}$, no estac. $\mathcal{{P}}: 5$)", xy=(T_base, prefix_cegis_base[T_base - 1]), xytext=(12.2, -45.5),
+                 arrowprops=dict(arrowstyle="->", color="#7b3294", lw=0.9), fontsize=7.8, color="#7b3294", fontweight="bold")
+    ax2.annotate(r"No estac. $\theta_0$: $T_{\mathrm{ns}} = 4 = \tau_H^{\mathrm{VFI}}$", xy=(4, -35.58), xytext=(5.5, -28.0),
+                 arrowprops=dict(arrowstyle="->", color="#111111", lw=0.9), fontsize=7.9, color="#111111", fontweight="bold")
 
     ax2.set_xlim(1, 50)
     ax2.set_ylim(-51.5, -25.0)
@@ -216,21 +217,21 @@ def make_fig2(sec4_rows: list) -> None:
     ax2.loglog(A_arr, beta_main ** T_esc, ":", color="#444444", lw=1.3, label=r"Referencia polilogarítmica $\beta^{T_{\mathrm{esc}}(A)}$")
 
     ax2.annotate(
-        r"$A=10^8: \Delta W_A^{\pi^+} \approx \Delta W_A^+ = 0.513$" + "\n" + r"$\beta^{T_{\mathrm{esc}}}=0.0215 \gg A^{-1}=10^{-8}$",
-        xy=(1e8, dW_pip[-1]), xytext=(1.5e4, 2.2),
+        r"$A=10^8: \Delta W_A^{\pi^+} \approx \Delta W_A^+ = 0.513$" + "\n" + r"Prueba analítica pura: $T_M = O(\ln\ln A),\ \beta^{T_M}g_{T_M} \gg A^{-1}$" + "\n" + r"2.º orden: $\Delta_k \asymp (\ln\ln A / (\ln A)^{1-\kappa})^{1/\mu_K}$",
+        xy=(1e8, dW_pip[-1]), xytext=(1.5e3, 3.2),
         arrowprops=dict(arrowstyle="->", color="#1f4e78", lw=0.9),
-        fontsize=7.6, color="#1f4e78", fontweight="bold",
-        bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#1f4e78", lw=0.6, alpha=0.95),
+        fontsize=7.1, color="#1f4e78", fontweight="bold",
+        bbox=dict(boxstyle="round,pad=0.22", fc="white", ec="#1f4e78", lw=0.6, alpha=0.95),
     )
     ax2.set_xlim(0.6, 2.0e8)
-    ax2.set_ylim(1e-9, 25.0)
+    ax2.set_ylim(1e-9, 120.0)
     ax2.set_xlabel(r"Productividad $A$ (escala log)", fontsize=9.5)
     ax2.set_ylabel(r"Diferenciales de bienestar (escala log)", fontsize=9.5)
     ax2.set_title(r"(b) Decaimiento $\Delta W_A^{\pi^+} \leq \Delta W_A^+ \to 0^+$ vs. $O(A^{-1})$", fontsize=10.2, pad=8)
     ax2.legend(loc="lower left", fontsize=7.0, frameon=True, facecolor="white", framealpha=0.96)
     ax2.grid(True, which="both", ls=":", alpha=0.35)
 
-    ax2_ins = inset_axes(ax2, width="40%", height="30%", loc="center left", bbox_to_anchor=(0.09, 0.24, 1.0, 1.0), bbox_transform=ax2.transAxes)
+    ax2_ins = inset_axes(ax2, width="34%", height="27%", loc="center left", bbox_to_anchor=(0.06, 0.04, 1.0, 1.0), bbox_transform=ax2.transAxes)
     ax2_ins.semilogx(A_arr, L_ss, "o-", color="#1b7837", ms=3.0, lw=1.4)
     ax2_ins.axhline(L_ss_exact, color="#111111", ls="--", lw=1.0)
     ax2_ins.set_ylim(0.7765, 0.7830)
@@ -280,14 +281,20 @@ def make_fig3(certs: dict, vfi5: dict) -> None:
     T2_ceg = bot_mt["T_star_cegis"]
     p2_b1_pct = 100.0 * (0.98 ** T2_B1)
     p2_ceg_pct = 100.0 * (0.98 ** T2_ceg)
-    eps0_min_c3 = min(rec["metrics"]["eps_0_lb"] for rec in certs["case3_markov_h1"].values())
+    eps0_min_c3 = min(rec["metrics"]["eps0_comp"] for rec in certs["case3_markov_h1"].values())
+    etau_max_c3 = max(rec["metrics"]["E_tau_comp"] for rec in certs["case3_markov_h1"].values())
+
+    p_er = np.array(vfi5["endo_ruin_p"], dtype=np.float64) * 100.0
+    S_er_rel = np.array(vfi5["endo_ruin_S"]) / vfi5["endo_ruin_S"][0]
+    kp_er_rel = (np.array(vfi5["endo_ruin_kp"]) / vfi5["endo_ruin_kp"][0] - 1.0) * 100.0
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13.2, 5.4))
     fig.subplots_adjust(wspace=0.26, bottom=0.14, top=0.88, left=0.07, right=0.93)
 
     # Panel (a)
-    l1, = ax1.plot(p_tests, S_ruin_rel, "o-", color="#c00000", lw=2.2, ms=4.5, label=r"Ruina: umbral $S^{\mathrm{ruin}}(p)/S_0$ (salto $2.89\times$ en 8%)")
-    l2, = ax1.plot(p_tests, S_mk_rel, "s-", color="#1f4e78", lw=2.1, ms=4.5, label=r"Markov ($p_{\mathrm{rec}}=1/3$): $S_G(p)/S_0$ ($+11.7\%$ en 8%)")
+    l1, = ax1.plot(p_tests, S_ruin_rel, "o-", color="#c00000", lw=2.2, ms=4.5, label=r"Ruina exóg.: $S^{\mathrm{ruin}}(p)/S_0$ ($2.89\times$ en 8%)")
+    l2, = ax1.plot(p_tests, S_mk_rel, "s-", color="#1f4e78", lw=2.1, ms=4.5, label=r"Markov ($p_{\mathrm{rec}}=1/3$): $S_G(p)/S_0$ ($+11.7\%$)")
+    l2e, = ax1.plot(p_er, S_er_rel, "v-", color="#7b3294", lw=1.9, ms=4.2, label=r"Ruina endóg. $p(K)$: $S_{\mathrm{endo}}(p)/S_0$")
     ax1.set_xlim(-0.2, 8.2)
     ax1.set_ylim(0.90, 3.08)
     ax1.set_xlabel(r"Probabilidad anual de crisis $p$ (%)", fontsize=9.5)
@@ -296,15 +303,16 @@ def make_fig3(certs: dict, vfi5: dict) -> None:
     ax1.grid(True, ls=":", alpha=0.35)
 
     ax1_r = ax1.twinx()
-    l3, = ax1_r.plot(p_tests, kp_ruin_rel, "^--", color="#d95f02", lw=1.7, ms=4.2, label=r"Ruina: $\Delta K'(0.10)$ (% caída inversión)")
+    l3, = ax1_r.plot(p_tests, kp_ruin_rel, "^--", color="#d95f02", lw=1.7, ms=4.2, label=r"Ruina exóg.: $\Delta K'(0.10)$ (% caída inv.)")
     l4, = ax1_r.plot(p_tests, kp_mk_rel, "D--", color="#1b7837", lw=1.7, ms=4.0, label=r"Markov: $\Delta K'_G(0.10)$ (% suba precautoria)")
+    l5, = ax1_r.plot(p_er, kp_er_rel, "P--", color="#984ea3", lw=1.8, ms=4.5, label=r"Ruina endóg. $p(K)$: $\Delta K'(0.10)$ (huida endóg.)")
     ax1_r.axhline(0.0, color="#666666", ls=":", lw=0.9)
     ax1_r.set_ylabel(r"Cambio en inversión $K'(0.10)$ respecto a $p=0$ (%)", fontsize=9.2)
-    ax1_r.set_ylim(-5.8, 2.0)
+    ax1_r.set_ylim(-5.8, 7.6)
 
-    lines_all = [l1, l2, l3, l4]
+    lines_all = [l1, l2, l2e, l3, l4, l5]
     labels_all = [ln.get_label() for ln in lines_all]
-    ax1.legend(lines_all, labels_all, loc="upper left", fontsize=7.0, frameon=True, facecolor="white", framealpha=0.96)
+    ax1.legend(lines_all, labels_all, loc="upper left", fontsize=6.4, frameon=True, facecolor="white", framealpha=0.96)
 
     # Panel (b)
     ax2.plot(p_dense * 100.0, P_23 * 100.0, "--", color="#1b7837", lw=1.8, label=r"Teo. 9* sin anticipación $(1-p)^{23}$ ($p=0$ fijo)")
@@ -331,10 +339,10 @@ def make_fig3(certs: dict, vfi5: dict) -> None:
     )
     ax2.annotate(
         rf"$p=2\%$: $B_1$ banda $\tilde{{\beta}}_p$ $T^*={T2_B1}$ ({p2_b1_pct:.1f}%)" + "\n" +
-        rf"Markov Caso 3: $\varepsilon_0 \geq {eps0_min_c3:.4f}$ hasta $p=12\%$",
-        xy=(2.0, p2_b1_pct), xytext=(0.45, 25.0),
+        rf"Markov Caso 3 ($B_{{G,\theta}},B_{{B,\theta}}$): $\mathbb{{E}}[\tau]\leq {etau_max_c3:.1f}$ ($\varepsilon_0\geq {eps0_min_c3:.3f}$)",
+        xy=(2.0, p2_b1_pct), xytext=(0.25, 25.0),
         arrowprops=dict(arrowstyle="->", color="#1f4e78", lw=0.9),
-        fontsize=7.4, color="#1f4e78", fontweight="bold",
+        fontsize=7.3, color="#1f4e78", fontweight="bold",
         bbox=dict(boxstyle="round,pad=0.22", fc="white", ec="#1f4e78", lw=0.6, alpha=0.95),
     )
 
@@ -353,12 +361,18 @@ def make_fig3(certs: dict, vfi5: dict) -> None:
 
 
 if __name__ == "__main__":
-    cert_path = os.path.join(OUT_DIR, "cegis_certificates.json")
-    certs_data = json.load(open(cert_path, "r", encoding="utf-8"))
+    cert_path = os.path.join(OUT_DIR, "cegis_certificates.json.xz")
+    if not os.path.exists(cert_path):
+        cert_path = os.path.join(OUT_DIR, "cegis_certificates.json")
+    certs_data = json.load(lzma.open(cert_path, "rt", encoding="utf-8") if cert_path.endswith(".xz") else open(cert_path, "r", encoding="utf-8"))
     fig1_only = "--fig1-only" in sys.argv
+    fig2_only = "--fig2-only" in sys.argv
     fig3_only = "--fig3-only" in sys.argv
     if fig1_only:
         make_fig1(certs_data)
+    elif fig2_only:
+        sec4_data = verify_section4_theorem3_star()
+        make_fig2(sec4_data)
     elif fig3_only:
         sec5_data = verify_section5_stochastic_vfi()
         make_fig3(certs_data, sec5_data)

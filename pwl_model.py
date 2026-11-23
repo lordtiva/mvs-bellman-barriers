@@ -12,18 +12,9 @@ Provides:
 from __future__ import annotations
 
 import math
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 from scipy.optimize import minimize as scipy_minimize
-
-try:
-    import torch
-    import torch.nn as nn
-    HAS_TORCH = True
-except ImportError:
-    torch = None
-    nn = None
-    HAS_TORCH = False
 
 
 def _relu(x: np.ndarray) -> np.ndarray:
@@ -410,80 +401,3 @@ class LogReLUNetwork:
         obj.b2 = None if data["b2"] is None else np.array(data["b2"], dtype=np.float64)
         obj.v = np.array(data["v"], dtype=np.float64)
         return obj
-
-
-if HAS_TORCH:
-    class TorchLogReLUModule(nn.Module):
-        def __init__(self, net: LogReLUNetwork, device: str = "cpu"):
-            super().__init__()
-            self.k_lo = net.k_lo
-            self.k_hi = net.k_hi
-            self.z_lo = net.z_lo
-            self.z_hi = net.z_hi
-            self.z_ref = net.z_ref
-            self.s_lo = net.s_lo
-            self.s_hi = net.s_hi
-            dev = torch.device(device)
-            self.c0 = nn.Parameter(torch.tensor(net.c0, dtype=torch.float64, device=dev))
-            self.alpha_lin = nn.Parameter(torch.tensor(net.alpha_lin, dtype=torch.float64, device=dev))
-            self.W1 = nn.Parameter(torch.tensor(net.W1, dtype=torch.float64, device=dev))
-            self.b1 = nn.Parameter(torch.tensor(net.b1, dtype=torch.float64, device=dev))
-            self.v = nn.Parameter(torch.tensor(net.v, dtype=torch.float64, device=dev))
-
-        def _eval_clamped(self, z_c: "torch.Tensor") -> "torch.Tensor":
-            dz = z_c - self.z_ref
-            h1 = torch.relu(dz.unsqueeze(-1) * self.W1.unsqueeze(0) + self.b1.unsqueeze(0))
-            return self.c0 + self.alpha_lin * dz + h1 @ self.v
-
-        def forward_log(self, z: "torch.Tensor") -> "torch.Tensor":
-            if self.s_lo is None and self.s_hi is None:
-                return self._eval_clamped(z)
-            z_c = torch.clamp(z, self.z_lo, self.z_hi)
-            out = self._eval_clamped(z_c)
-            if self.s_lo is not None:
-                out = out + self.s_lo * (-torch.relu(self.z_lo - z))
-            if self.s_hi is not None:
-                out = out + self.s_hi * torch.relu(z - self.z_hi)
-            return out
-
-        def sync_to_numpy(self, net: LogReLUNetwork) -> None:
-            with torch.no_grad():
-                net.c0 = float(self.c0.detach().cpu().item())
-                net.alpha_lin = float(self.alpha_lin.detach().cpu().item())
-                net.W1 = self.W1.detach().cpu().numpy().copy()
-                net.b1 = self.b1.detach().cpu().numpy().copy()
-                net.v = self.v.detach().cpu().numpy().copy()
-
-
-def optimize_numpy_adam(
-    nets: Sequence[LogReLUNetwork],
-    loss_and_grads_fn: Callable[[], Tuple[float, Sequence[np.ndarray]]],
-    steps: int = 400,
-    lr: float = 2e-2,
-    lr_decay: float = 0.996,
-) -> float:
-    vecs = [n.get_params_vector() for n in nets]
-    m_v = [np.zeros_like(v) for v in vecs]
-    v_v = [np.zeros_like(v) for v in vecs]
-    beta1, beta2, eps = 0.9, 0.999, 1e-8
-    best_loss = float("inf")
-    best_vecs = [v.copy() for v in vecs]
-    cur_lr = lr
-    for t in range(1, steps + 1):
-        loss, grads = loss_and_grads_fn()
-        if loss < best_loss:
-            best_loss = loss
-            best_vecs = [n.get_params_vector() for n in nets]
-        for i, (n, g) in enumerate(zip(nets, grads)):
-            m_v[i] = beta1 * m_v[i] + (1.0 - beta1) * g
-            v_v[i] = beta2 * v_v[i] + (1.0 - beta2) * (g * g)
-            mh = m_v[i] / (1.0 - beta1 ** t)
-            vh = v_v[i] / (1.0 - beta2 ** t)
-            p = n.get_params_vector() - cur_lr * mh / (np.sqrt(vh) + eps)
-            n.set_params_vector(p)
-        cur_lr *= lr_decay
-    loss_final, _ = loss_and_grads_fn()
-    if loss_final > best_loss:
-        for n, bv in zip(nets, best_vecs):
-            n.set_params_vector(bv)
-    return min(best_loss, loss_final)

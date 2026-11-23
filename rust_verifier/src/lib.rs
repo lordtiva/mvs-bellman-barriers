@@ -73,17 +73,26 @@ impl Iv {
     }
     #[inline(always)]
     fn sqrt(self) -> Self {
-        Self {
-            lo: dn(self.lo.max(0.0).sqrt(), 2),
-            hi: up(self.hi.max(0.0).sqrt(), 2),
+        let mut lo = self.lo.max(0.0).sqrt();
+        if lo > 0.0 {
+            lo = dn(lo, 1);
+            while lo > 0.0 && lo * lo > self.lo {
+                lo = lo.next_down();
+            }
         }
+        let mut hi = self.hi.max(0.0).sqrt();
+        hi = up(hi, 1);
+        while hi * hi < self.hi {
+            hi = hi.next_up();
+        }
+        Self { lo, hi }
     }
     #[inline(always)]
     fn ln(self) -> Self {
-        Self {
-            lo: dn(self.lo.ln(), 4),
-            hi: up(self.hi.ln(), 4),
+        if self.lo <= 0.0 {
+            return Self::raw(f64::NEG_INFINITY, iv_ln_pt(self.hi).hi);
         }
+        Self::raw(iv_ln_pt(self.lo).lo, iv_ln_pt(self.hi).hi)
     }
     #[inline(always)]
     fn pow32(self) -> Self {
@@ -104,6 +113,61 @@ impl Iv {
     #[inline(always)]
     fn max_abs(self) -> f64 {
         self.lo.abs().max(self.hi.abs())
+    }
+}
+
+/// Self-contained libm-free natural logarithm enclosure via MR Lemma 11 (Eq. F.5):
+/// x = 2^k * m with m in [1, 2), v = (m-1)/(m+1) in [0, 1/3),
+/// log(m) in [2*sum_{j=0}^{N-1} v^{2j+1}/(2j+1), + 2*v^{2N+1}/((2N+1)*(1-v^2))].
+#[inline]
+fn iv_ln_pt(x: f64) -> Iv {
+    if x.is_nan() || x <= 0.0 {
+        return Iv::raw(f64::NEG_INFINITY, f64::NEG_INFINITY);
+    }
+    if x == 1.0 {
+        return Iv::pt(0.0);
+    }
+    const POW2_54: f64 = 18014398509481984.0;
+    let mut xv = x;
+    let mut k: i32 = 0;
+    if xv < 2.2250738585072014e-308 {
+        xv *= POW2_54;
+        k -= 54;
+    }
+    let bits = xv.to_bits();
+    let exp = ((bits >> 52) & 0x7ff) as i32 - 1023;
+    k += exp;
+    let mant = f64::from_bits((bits & 0x000f_ffff_ffff_ffff) | 0x3ff0_0000_0000_0000);
+
+    let m_iv = Iv::pt(mant);
+    let one = Iv::pt(1.0);
+    let v = m_iv.sub(one).div(m_iv.add(one));
+    let v2 = v.mul(v);
+    let mut term = v;
+    let mut sum = v;
+    for j in 1..16usize {
+        term = term.mul(v2);
+        let denom = Iv::pt((2 * j + 1) as f64);
+        sum = sum.add(term.div(denom));
+    }
+    let v33 = term.mul(v2);
+    let rem_den = Iv::pt(33.0).mul(one.sub(v2));
+    let rem_hi = Iv::pt(2.0).mul(Iv::pt(v33.hi)).div(Iv::pt(rem_den.lo)).hi;
+    let ln_m = Iv::pt(2.0).mul(sum).add(Iv::raw(0.0, rem_hi));
+
+    // Exact IEEE-754 outward enclosure of ln(2) = 0.693147180559945309417232121458...
+    const LN2_LO: f64 = 0.6931471805599452;
+    const LN2_HI: f64 = 0.6931471805599454;
+    let ln2_iv = Iv::raw(LN2_LO, LN2_HI);
+    Iv::pt(k as f64).mul(ln2_iv).add(ln_m)
+}
+
+#[no_mangle]
+pub extern "C" fn rs_test_iv_ln(x: f64, out_lo: *mut f64, out_hi: *mut f64) {
+    let iv = iv_ln_pt(x);
+    unsafe {
+        if !out_lo.is_null() { *out_lo = iv.lo; }
+        if !out_hi.is_null() { *out_hi = iv.hi; }
     }
 }
 
@@ -509,11 +573,16 @@ pub struct BbOut {
 }
 
 fn audit_staying_boxes_rs(
-    pwl: &Pwl,
+    b_lhs: &Pwl,
+    b_ev: &Pwl,
     bxL: &[f64], bxR: &[f64], byL: &[f64], byR: &[f64], bLL: &[f64], bLR: &[f64],
     a_hi: f64, q_hi: f64, b_lo: f64, b_hi: f64, e_lo: f64, e_hi: f64,
+    p_ruin: f64, v_ruin: f64,
 ) -> f64 {
     let mut global_ub = f64::NEG_INFINITY;
+    let b_iv_box = Iv::raw(b_lo, b_hi);
+    let omp = Iv::pt(1.0).sub(Iv::pt(p_ruin));
+    let pv_iv = Iv::pt(p_ruin).mul(Iv::pt(v_ruin));
     for i in 0..bxL.len() {
         let xL = bxL[i]; let xR = bxR[i];
         let yL = byL[i]; let yR = byR[i];
@@ -525,10 +594,11 @@ fn audit_staying_boxes_rs(
         if c_iv.hi <= 0.0 {
             continue;
         }
-        let bx_iv = pwl.iv_range(xL, xR);
-        let by_iv = pwl.iv_range(yL, yR);
-        let bby_a = Iv::pt(if by_iv.lo < 0.0 { b_lo } else { b_hi }).mul(Iv::pt(by_iv.lo));
-        let bby_b = Iv::pt(if by_iv.hi < 0.0 { b_lo } else { b_hi }).mul(Iv::pt(by_iv.hi));
+        let bx_iv = b_lhs.iv_range(xL, xR);
+        let by_raw = b_ev.iv_range(yL, yR);
+        let cb_iv = if p_ruin > 0.0 { omp.mul(by_raw).add(pv_iv) } else { by_raw };
+        let bby_a = Iv::pt(if cb_iv.lo < 0.0 { b_lo } else { b_hi }).mul(Iv::pt(cb_iv.lo));
+        let bby_b = Iv::pt(if cb_iv.hi < 0.0 { b_lo } else { b_hi }).mul(Iv::pt(cb_iv.hi));
         let bby1 = bby_a.hi.max(bby_b.hi);
         let lc1 = Iv::pt(c_iv.hi).ln().hi;
         let ec_hi = if c_iv.hi < 1.0 { e_lo } else { e_hi };
@@ -558,27 +628,29 @@ fn audit_staying_boxes_rs(
                 let lcm = cm_iv.ln();
                 let llm = Iv::pt(1.0).sub(Iv::pt(lm)).ln();
                 let ulm1 = ome_hi.mul(llm).hi;
-                let bxm_lo = pwl.iv_eval_pt(xm).lo;
-                let bym_iv = pwl.iv_eval_pt(ym);
-                let b_m = if bym_iv.hi < 0.0 {
+                let bxm_lo = b_lhs.iv_eval_pt(xm).lo;
+                let bym_raw = b_ev.iv_eval_pt(ym);
+                let cbm_iv = if p_ruin > 0.0 { omp.mul(bym_raw).add(pv_iv) } else { bym_raw };
+                let b_m = if cbm_iv.hi < 0.0 {
                     Iv::pt(b_lo)
-                } else if bym_iv.lo >= 0.0 {
+                } else if cbm_iv.lo >= 0.0 {
                     Iv::pt(b_hi)
                 } else {
-                    Iv::raw(b_lo, b_hi)
+                    b_iv_box
                 };
-                let bbym1 = b_m.mul(bym_iv).hi;
+                let bbym1 = b_m.mul(cbm_iv).hi;
 
                 let yx = Iv::pt(q_hi).add(iv_df_dk_box(a_hi, xL, xR, lL, lR));
                 let yl = iv_df_dl_box(a_hi, xL, xR, lL, lR);
-                let dbx = pwl.iv_deriv_bounds(xL, xR);
-                let dby = pwl.iv_deriv_bounds(yL, yR);
-                let b_eff = if by_iv.hi < 0.0 {
+                let dbx = b_lhs.iv_deriv_bounds(xL, xR);
+                let dby_raw = b_ev.iv_deriv_bounds(yL, yR);
+                let dby = if p_ruin > 0.0 { omp.mul(dby_raw) } else { dby_raw };
+                let b_eff = if cb_iv.hi < 0.0 {
                     Iv::pt(b_lo)
-                } else if by_iv.lo >= 0.0 {
+                } else if cb_iv.lo >= 0.0 {
                     Iv::pt(b_hi)
                 } else {
-                    Iv::raw(b_lo, b_hi)
+                    b_iv_box
                 };
                 let bdby = b_eff.mul(dby);
                 let invc = Iv::pt(1.0).div(c_iv);
@@ -622,8 +694,12 @@ fn audit_super_boxes_rs(
     ev_pwl: &Pwl,
     bxL: &[f64], bxR: &[f64], bLL: &[f64], bLR: &[f64], bsL: &[f64], bsR: &[f64],
     av: f64, q_hi: f64, b_lo: f64, b_hi: f64, e_lo: f64, e_hi: f64, ak_mode: bool,
+    p_ruin: f64, v_ruin: f64, h_safe: f64,
 ) -> f64 {
     let mut global_ub = f64::NEG_INFINITY;
+    let b_iv_box = Iv::raw(b_lo, b_hi);
+    let omp = Iv::pt(1.0).sub(Iv::pt(p_ruin));
+    let pv_iv = Iv::pt(p_ruin).mul(Iv::pt(v_ruin));
     for i in 0..bxL.len() {
         let xL = bxL[i]; let xR = bxR[i];
         let lL = bLL[i]; let lR = bLR[i];
@@ -631,6 +707,7 @@ fn audit_super_boxes_rs(
         if sL >= 1.0 || sR <= 0.0 || lL >= 1.0 {
             continue;
         }
+        let has_ruin = p_ruin > 0.0 && xR <= h_safe;
         let y_f = iv_prod_y_box(av, xL, xR, lL, lR, ak_mode, H_M);
         let qx0 = Iv::pt(q_hi).mul(Iv::pt(xL)).lo;
         let qx1 = Iv::pt(q_hi).mul(Iv::pt(xR)).hi;
@@ -651,15 +728,17 @@ fn audit_super_boxes_rs(
             continue;
         }
         let y0 = if sL > 0.0 { Iv::pt(sL).mul(Iv::pt(y_tot.lo)).lo } else { 0.0 };
-        let mut ev_iv = Iv::raw(0.0, 0.0);
+        let mut cb_box = Iv::raw(0.0, 0.0);
         let b_ev1 = if y0 > 0.0 {
-            ev_iv = ev_pwl.iv_range(y0, y1);
-            let bev_a = Iv::pt(if ev_iv.lo < 0.0 { b_lo } else { b_hi }).mul(Iv::pt(ev_iv.lo)).hi;
-            let bev_b = Iv::pt(if ev_iv.hi < 0.0 { b_lo } else { b_hi }).mul(Iv::pt(ev_iv.hi)).hi;
+            let ev_raw = ev_pwl.iv_range(y0, y1);
+            cb_box = if has_ruin { omp.mul(ev_raw).add(pv_iv) } else { ev_raw };
+            let bev_a = Iv::pt(if cb_box.lo < 0.0 { b_lo } else { b_hi }).mul(Iv::pt(cb_box.lo)).hi;
+            let bev_b = Iv::pt(if cb_box.hi < 0.0 { b_lo } else { b_hi }).mul(Iv::pt(cb_box.hi)).hi;
             bev_a.max(bev_b)
         } else {
             let ev_hi = ev_pwl.iv_eval_pt(y1).hi;
-            Iv::pt(if ev_hi < 0.0 { b_lo } else { b_hi }).mul(Iv::pt(ev_hi)).hi
+            let cb_hi = if has_ruin { omp.mul(Iv::pt(ev_hi)).add(pv_iv).hi } else { ev_hi };
+            Iv::pt(if cb_hi < 0.0 { b_lo } else { b_hi }).mul(Iv::pt(cb_hi)).hi
         };
 
         let ec_hi = if c_max < 1.0 { e_lo } else { e_hi };
@@ -672,7 +751,8 @@ fn audit_super_boxes_rs(
         let ub_mono = Iv::pt(ulc1).add(Iv::pt(uom1)).add(Iv::pt(b_ev1)).sub(Iv::pt(vs_iv.lo)).hi;
         let mut box_ub = ub_mono;
 
-        let can_cent = (lR < 1.0) && (sL > 0.0) && (y0 > 0.0) && (sR < 1.0) && (c_min > 1e-30) && (!ak_mode || xR <= H_M || xL >= H_M);
+        let ruin_split_ok = p_ruin == 0.0 || xR <= h_safe || xL >= h_safe;
+        let can_cent = ruin_split_ok && (lR < 1.0) && (sL > 0.0) && (y0 > 0.0) && (sR < 1.0) && (c_min > 1e-30) && (!ak_mode || xR <= H_M || xL >= H_M);
         if can_cent {
             let xm = 0.5 * (xL + xR);
             let lm = 0.5 * (lL + lR);
@@ -690,16 +770,17 @@ fn audit_super_boxes_rs(
                 let lcm = cm_iv.ln();
                 let llm = Iv::pt(1.0).sub(Iv::pt(lm)).ln();
                 let ulm1 = ome_hi.mul(llm).hi;
-                let evm_iv = ev_pwl.iv_range(ym_iv.lo, ym_iv.hi);
+                let evm_raw = ev_pwl.iv_range(ym_iv.lo, ym_iv.hi);
+                let cbm_iv = if has_ruin { omp.mul(evm_raw).add(pv_iv) } else { evm_raw };
                 let vsm_lo = vs_pwl.iv_eval_pt(xm).lo;
-                let bm = if evm_iv.hi < 0.0 {
+                let bm = if cbm_iv.hi < 0.0 {
                     Iv::pt(b_lo)
-                } else if evm_iv.lo >= 0.0 {
+                } else if cbm_iv.lo >= 0.0 {
                     Iv::pt(b_hi)
                 } else {
-                    Iv::raw(b_lo, b_hi)
+                    b_iv_box
                 };
-                let bevm1 = bm.mul(evm_iv).hi;
+                let bevm1 = bm.mul(cbm_iv).hi;
 
                 let (yx0, yl0) = if !ak_mode || xR <= H_M {
                     (iv_df_dk_box(av, xL, xR, lL, lR), iv_df_dl_box(av, xL, xR, lL, lR))
@@ -713,14 +794,15 @@ fn audit_super_boxes_rs(
                 };
                 let yx = Iv::pt(q_hi).add(yx0);
 
-                let d_ev = ev_pwl.iv_deriv_bounds(y0, y1);
+                let d_ev_raw = ev_pwl.iv_deriv_bounds(y0, y1);
+                let d_ev = if has_ruin { omp.mul(d_ev_raw) } else { d_ev_raw };
                 let d_vs = vs_pwl.iv_deriv_bounds(xL, xR);
-                let beff = if ev_iv.hi < 0.0 {
+                let beff = if cb_box.hi < 0.0 {
                     Iv::pt(b_lo)
-                } else if ev_iv.lo >= 0.0 {
+                } else if cb_box.lo >= 0.0 {
                     Iv::pt(b_hi)
                 } else {
-                    Iv::raw(b_lo, b_hi)
+                    b_iv_box
                 };
                 let bd_ev = beff.mul(d_ev);
                 let sbd = Iv::raw(sL, sR).mul(bd_ev);
@@ -767,35 +849,48 @@ fn audit_super_boxes_rs(
 }
 
 #[no_mangle]
-pub extern "C" fn rs_verify_staying_barrier_bb(
-    ks_ptr: *const f64, lks_ptr: *const f64, vals_ptr: *const f64, slopes_ptr: *const f64,
-    nk: usize, s_lo: f64, s_hi: f64,
+pub extern "C" fn rs_verify_staying_barrier_bb_ext(
+    ks_l_ptr: *const f64, lks_l_ptr: *const f64, vals_l_ptr: *const f64, slopes_l_ptr: *const f64,
+    nk_l: usize, s_lo_l: f64, s_hi_l: f64,
+    ks_e_ptr: *const f64, lks_e_ptr: *const f64, vals_e_ptr: *const f64, slopes_e_ptr: *const f64,
+    nk_e: usize, s_lo_e: f64, s_hi_e: f64,
+    b_m: f64, h_m: f64,
     a_hi: f64, q_hi: f64, b_lo: f64, b_hi: f64, e_lo: f64, e_hi: f64,
+    p_ruin: f64, v_ruin: f64,
     tol: f64, max_iter: usize,
     ce_out: *mut f64, max_ce: usize,
 ) -> BbOut {
-    let ks = unsafe { slice::from_raw_parts(ks_ptr, nk) };
-    let lks = unsafe { slice::from_raw_parts(lks_ptr, nk) };
-    let vals = unsafe { slice::from_raw_parts(vals_ptr, nk) };
-    let slopes = unsafe { slice::from_raw_parts(slopes_ptr, nk - 1) };
-    let b_pwl = Pwl::new(ks, lks, vals, slopes, s_lo, s_hi);
+    let ks_l = unsafe { slice::from_raw_parts(ks_l_ptr, nk_l) };
+    let lks_l = unsafe { slice::from_raw_parts(lks_l_ptr, nk_l) };
+    let vals_l = unsafe { slice::from_raw_parts(vals_l_ptr, nk_l) };
+    let slopes_l = unsafe { slice::from_raw_parts(slopes_l_ptr, nk_l - 1) };
+    let b_lhs = Pwl::new(ks_l, lks_l, vals_l, slopes_l, s_lo_l, s_hi_l);
+
+    let ks_e = unsafe { slice::from_raw_parts(ks_e_ptr, nk_e) };
+    let lks_e = unsafe { slice::from_raw_parts(lks_e_ptr, nk_e) };
+    let vals_e = unsafe { slice::from_raw_parts(vals_e_ptr, nk_e) };
+    let slopes_e = unsafe { slice::from_raw_parts(slopes_e_ptr, nk_e - 1) };
+    let b_ev = Pwl::new(ks_e, lks_e, vals_e, slopes_e, s_lo_e, s_hi_e);
+
+    let omp = 1.0 - p_ruin;
+    let pv = p_ruin * v_ruin;
 
     let mut xg = Vec::with_capacity(45);
-    push_linspace(&mut xg, B_M, H_M, 45, true);
+    push_linspace(&mut xg, b_m, h_m, 45, true);
     let mut yg = Vec::with_capacity(45);
-    push_linspace(&mut yg, B_M, H_M, 45, true);
+    push_linspace(&mut yg, b_m, h_m, 45, true);
     let mut lg = Vec::with_capacity(31);
     lg.push(0.0);
     push_linspace(&mut lg, 0.05, 0.999, 30, true);
 
-    let bx_g: Vec<f64> = xg.iter().map(|&x| b_pwl.eval_f64(x)).collect();
+    let bx_g: Vec<f64> = xg.iter().map(|&x| b_lhs.eval_f64(x)).collect();
     let by_term: Vec<f64> = yg.iter().map(|&y| {
-        let by = b_pwl.eval_f64(y);
-        (if by < 0.0 { b_lo } else { b_hi }) * by
+        let cb = omp * b_ev.eval_f64(y) + pv;
+        (if cb < 0.0 { b_lo } else { b_hi }) * cb
     }).collect();
 
     let mut best_lb = -1e9f64;
-    let mut worst_pt = (B_M, B_M, 0.5);
+    let mut worst_pt = (b_m, b_m, 0.5);
     for (ix, &xv) in xg.iter().enumerate() {
         let bxv = bx_g[ix];
         for &lv in &lg {
@@ -814,18 +909,27 @@ pub extern "C" fn rs_verify_staying_barrier_bb(
             }
         }
     }
-    let mut target = best_lb + tol;
+    let mut target = if best_lb < -tol { (best_lb + tol).max(-2.0e-4) } else { best_lb + tol };
     let mut ces: Vec<[f64; 4]> = vec![[worst_pt.0, worst_pt.1, worst_pt.2, best_lb]];
 
     let mut xs_b = Vec::new();
-    xs_b.push(B_M);
-    for &kv in ks {
-        if kv > B_M && kv < H_M { xs_b.push(kv); }
+    xs_b.push(b_m);
+    for &kv in ks_l {
+        if kv > b_m && kv < h_m { xs_b.push(kv); }
     }
-    xs_b.push(H_M);
-    push_linspace(&mut xs_b, B_M, H_M, 19, true);
+    xs_b.push(h_m);
+    push_linspace(&mut xs_b, b_m, h_m, 19, true);
     let xs_b = sorted_dedup(xs_b);
-    let ys_b = xs_b.clone();
+
+    let mut ys_b = Vec::new();
+    ys_b.push(b_m);
+    for &kv in ks_e {
+        if kv > b_m && kv < h_m { ys_b.push(kv); }
+    }
+    ys_b.push(h_m);
+    push_linspace(&mut ys_b, b_m, h_m, 19, true);
+    let ys_b = sorted_dedup(ys_b);
+
     let ls_b = [0.0, 0.15, 0.35, 0.55, 0.72, 0.85, 0.94, 0.985, 0.998, 1.0];
 
     let cap = (xs_b.len() - 1) * (ys_b.len() - 1) * (ls_b.len() - 1);
@@ -871,10 +975,12 @@ pub extern "C" fn rs_verify_staying_barrier_bb(
             let mut ub = -1e9f64;
             if !infeasible {
                 let ec_max = if c_max < 1.0 { e_lo } else { e_hi };
-                let (bx_min, _) = b_pwl.range_f64(xL, xR);
-                let (by_min, by_max) = b_pwl.range_f64(yL, yR);
-                let b_by_max = ((if by_min < 0.0 { b_lo } else { b_hi }) * by_min)
-                    .max((if by_max < 0.0 { b_lo } else { b_hi }) * by_max);
+                let (bx_min, _) = b_lhs.range_f64(xL, xR);
+                let (by_min, by_max) = b_ev.range_f64(yL, yR);
+                let cb_min = omp * by_min + pv;
+                let cb_max = omp * by_max + pv;
+                let b_by_max = ((if cb_min < 0.0 { b_lo } else { b_hi }) * cb_min)
+                    .max((if cb_max < 0.0 { b_lo } else { b_hi }) * cb_max);
                 ub = ec_max * c_max.max(1e-300).ln() + (1.0 - e_hi) * (1.0 - lL).max(1e-300).ln() + b_by_max - bx_min;
 
                 let xm = 0.5 * (xL + xR);
@@ -888,17 +994,19 @@ pub extern "C" fn rs_verify_staying_barrier_bb(
                     let (yx_lo0, yx_hi0) = prod_dy_dk_bounds_f64(a_hi, xL, xR, lL, lR, false);
                     let yx_lo = q_hi + yx_lo0; let yx_hi = q_hi + yx_hi0;
                     let (yl_lo, yl_hi) = prod_dy_dl_bounds_f64(a_hi, xL, xR, lL, lR, false);
-                    let (dbx_lo, dbx_hi) = b_pwl.deriv_bounds_f64(xL, xR);
-                    let (dby_lo, dby_hi) = b_pwl.deriv_bounds_f64(yL, yR);
-                    let bx_m = b_pwl.eval_f64(xm);
-                    let by_m = b_pwl.eval_f64(ym);
-                    let b_lo_v = if by_max < 0.0 { b_lo } else { b_hi };
-                    let b_hi_v = if by_min >= 0.0 { b_hi } else { b_lo };
+                    let (dbx_lo, dbx_hi) = b_lhs.deriv_bounds_f64(xL, xR);
+                    let (dby_lo0, dby_hi0) = b_ev.deriv_bounds_f64(yL, yR);
+                    let dby_lo = omp * dby_lo0;
+                    let dby_hi = omp * dby_hi0;
+                    let bx_m = b_lhs.eval_f64(xm);
+                    let cb_m = omp * b_ev.eval_f64(ym) + pv;
+                    let b_lo_v = if cb_max < 0.0 { b_lo } else { b_hi };
+                    let b_hi_v = if cb_min >= 0.0 { b_hi } else { b_lo };
                     let b_eff_lo = b_lo_v.min(b_hi_v);
                     let b_eff_hi = b_lo_v.max(b_hi_v);
                     let cross_c1 = c_min < 1.0 && c_max >= 1.0;
                     let mut best_eta_ub = -1e9f64;
-                    let b_m_ec = if by_m < 0.0 { b_lo } else { b_hi };
+                    let b_m_ec = if cb_m < 0.0 { b_lo } else { b_hi };
                     let inv_c_lo = 1.0 / c_max;
                     let inv_c_hi = 1.0 / c_min;
                     let bdby_lo = (b_eff_lo * dby_lo).min(b_eff_hi * dby_lo);
@@ -909,7 +1017,7 @@ pub extern "C" fn rs_verify_staying_barrier_bb(
                         let ec = if pass_idx == 0 { e_lo } else { e_hi };
                         let ec_lo = if cross_c1 { e_lo } else { ec };
                         let ec_hi = if cross_c1 { e_hi } else { ec };
-                        let hm = ec * cm.ln() + (1.0 - e_hi) * (1.0 - lm).ln() + b_m_ec * by_m - bx_m;
+                        let hm = ec * cm.ln() + (1.0 - e_hi) * (1.0 - lm).ln() + b_m_ec * cb_m - bx_m;
                         let dx_lo = ec_lo * inv_c_lo * yx_lo - dbx_hi;
                         let dx_hi = ec_hi * inv_c_hi * yx_hi - dbx_lo;
                         let dy_lo = -ec_hi * inv_c_hi + bdby_lo;
@@ -935,9 +1043,9 @@ pub extern "C" fn rs_verify_staying_barrier_bb(
                     let cm = q_hi * xm + f_a(a_hi, xm, lm) - ym;
                     if cm > 1e-15 {
                         let ecm = if cm < 1.0 { e_lo } else { e_hi };
-                        let bym = b_pwl.eval_f64(ym);
+                        let cbm = omp * b_ev.eval_f64(ym) + pv;
                         let lb_v = ecm * cm.ln() + (1.0 - e_hi) * (1.0 - lm).ln()
-                            + (if bym < 0.0 { b_lo } else { b_hi }) * bym - b_pwl.eval_f64(xm);
+                            + (if cbm < 0.0 { b_lo } else { b_hi }) * cbm - b_lhs.eval_f64(xm);
                         if lb_v > best_k_lb {
                             best_k_lb = lb_v;
                             best_k_pt = (xm, ym, lm);
@@ -961,10 +1069,10 @@ pub extern "C" fn rs_verify_staying_barrier_bb(
         }
         if best_k_lb > best_lb {
             best_lb = best_k_lb;
-            target = best_lb + tol;
+            target = if best_lb < -tol { (best_lb + tol).max(-2.0e-4) } else { best_lb + tol };
             ces.push([best_k_pt.0, best_k_pt.1, best_k_pt.2, best_lb]);
         }
-        if nxL.len() > 80_000 {
+        if nxL.len() > 250_000 {
             leaf_xL.extend_from_slice(&nxL); leaf_xR.extend_from_slice(&nxR);
             leaf_yL.extend_from_slice(&nyL); leaf_yR.extend_from_slice(&nyR);
             leaf_LL.extend_from_slice(&nLL); leaf_LR.extend_from_slice(&nLR);
@@ -979,9 +1087,9 @@ pub extern "C" fn rs_verify_staying_barrier_bb(
             let yL = nyL[i]; let yR = nyR[i];
             let lL = nLL[i]; let lR = nLR[i];
             let xm = 0.5 * (xL + xR); let ym = 0.5 * (yL + yR); let lm = 0.5 * (lL + lR);
-            let ex = xR - xL;
-            let ey = yR - yL;
-            let els = (lR - lL) / (1.0 - lR).max(1e-3);
+            let ex = (xR - xL) / xL;
+            let ey = (yR - yL) / yL;
+            let els = 0.25 * (lR - lL) / (1.0 - lR).max(1e-3);
             if ex >= ey && ex >= els {
                 bxL.push(xL); bxR.push(xm); byL.push(yL); byR.push(yR); bLL.push(lL); bLR.push(lR);
                 bxL.push(xm); bxR.push(xR); byL.push(yL); byR.push(yR); bLL.push(lL); bLR.push(lR);
@@ -1014,7 +1122,10 @@ pub extern "C" fn rs_verify_staying_barrier_bb(
     }
 
     let d_ub_v = d_ub.unwrap_or(last_max_ub);
-    let d_ub_iv = audit_staying_boxes_rs(&b_pwl, &leaf_xL, &leaf_xR, &leaf_yL, &leaf_yR, &leaf_LL, &leaf_LR, a_hi, q_hi, b_lo, b_hi, e_lo, e_hi);
+    let d_ub_iv = audit_staying_boxes_rs(
+        &b_lhs, &b_ev, &leaf_xL, &leaf_xR, &leaf_yL, &leaf_yR, &leaf_LL, &leaf_LR,
+        a_hi, q_hi, b_lo, b_hi, e_lo, e_hi, p_ruin, v_ruin,
+    );
     let iv_cert = d_ub_iv <= 0.0;
     let cert = d_ub_v <= 0.0 && iv_cert;
 
@@ -1041,12 +1152,29 @@ pub extern "C" fn rs_verify_staying_barrier_bb(
 }
 
 #[no_mangle]
-pub extern "C" fn rs_verify_super_barrier_bb(
+pub extern "C" fn rs_verify_staying_barrier_bb(
+    ks_ptr: *const f64, lks_ptr: *const f64, vals_ptr: *const f64, slopes_ptr: *const f64,
+    nk: usize, s_lo: f64, s_hi: f64,
+    a_hi: f64, q_hi: f64, b_lo: f64, b_hi: f64, e_lo: f64, e_hi: f64,
+    tol: f64, max_iter: usize,
+    ce_out: *mut f64, max_ce: usize,
+) -> BbOut {
+    rs_verify_staying_barrier_bb_ext(
+        ks_ptr, lks_ptr, vals_ptr, slopes_ptr, nk, s_lo, s_hi,
+        ks_ptr, lks_ptr, vals_ptr, slopes_ptr, nk, s_lo, s_hi,
+        B_M, H_M, a_hi, q_hi, b_lo, b_hi, e_lo, e_hi, 0.0, 0.0,
+        tol, max_iter, ce_out, max_ce,
+    )
+}
+
+#[no_mangle]
+pub extern "C" fn rs_verify_super_barrier_bb_ext(
     ks_s_ptr: *const f64, lks_s_ptr: *const f64, vals_s_ptr: *const f64, slopes_s_ptr: *const f64,
     nk_s: usize, s_lo_s: f64, s_hi_s: f64,
     ks_e_ptr: *const f64, lks_e_ptr: *const f64, vals_e_ptr: *const f64, slopes_e_ptr: *const f64,
     nk_e: usize, s_lo_e: f64, s_hi_e: f64,
     av: f64, q_hi: f64, b_lo: f64, b_hi: f64, e_lo: f64, e_hi: f64,
+    p_ruin: f64, v_ruin: f64, h_safe: f64,
     tail_max: f64, tol: f64, ak_mode_i: i32, max_iter: usize, max_boxes: usize,
     ce_out: *mut f64, max_ce: usize,
 ) -> BbOut {
@@ -1065,6 +1193,8 @@ pub extern "C" fn rs_verify_super_barrier_bb(
     let ak_mode = ak_mode_i != 0;
     let x_lo = ks_s[0];
     let x_cut = ks_s[nk_s - 1];
+    let omp = 1.0 - p_ruin;
+    let pv = p_ruin * v_ruin;
 
     // Grid search lower bound
     let mut xg = Vec::with_capacity(64 + nk_s);
@@ -1081,15 +1211,17 @@ pub extern "C" fn rs_verify_super_barrier_bb(
     let mut worst_pt = (x_lo, 0.0, 0.5);
     for &xv in &xg {
         let vsx = vs_pwl.eval_f64(xv);
+        let xr = p_ruin > 0.0 && xv < h_safe;
         for &lv in &lg {
             let y_tot = q_hi * xv + prod_y_f64(av, xv, lv, ak_mode);
             let ll = (1.0 - lv).ln();
             for &sv in &sg {
                 let c = y_tot * (1.0 - sv);
                 let ec = if c < 1.0 { e_lo } else { e_hi };
-                let ev = ev_pwl.eval_f64(y_tot * sv);
-                let bv = if ev < 0.0 { b_lo } else { b_hi };
-                let v = ec * c.ln() + (1.0 - e_hi) * ll + bv * ev - vsx;
+                let ev_raw = ev_pwl.eval_f64(y_tot * sv);
+                let cb = if xr { omp * ev_raw + pv } else { ev_raw };
+                let bv = if cb < 0.0 { b_lo } else { b_hi };
+                let v = ec * c.ln() + (1.0 - e_hi) * ll + bv * cb - vsx;
                 if v > best_lb {
                     best_lb = v;
                     worst_pt = (xv, lv, sv);
@@ -1103,15 +1235,17 @@ pub extern "C" fn rs_verify_super_barrier_bb(
         for i in 0..nk_s - 1 {
             let xm = (ks_s[i] * ks_s[i + 1]).sqrt();
             let vsx = vs_pwl.eval_f64(xm);
+            let xr = p_ruin > 0.0 && xm < h_safe;
             for &lv in &lms {
                 let y_tot = q_hi * xm + prod_y_f64(av, xm, lv, ak_mode);
                 let ll = (1.0 - lv).ln();
                 for &sv in &sms {
                     let c = (y_tot * (1.0 - sv)).max(1e-300);
                     let ec = if c < 1.0 { e_lo } else { e_hi };
-                    let ev = ev_pwl.eval_f64(y_tot * sv);
-                    let bv = if ev < 0.0 { b_lo } else { b_hi };
-                    let v = ec * c.ln() + (1.0 - e_hi) * ll + bv * ev - vsx;
+                    let ev_raw = ev_pwl.eval_f64(y_tot * sv);
+                    let cb = if xr { omp * ev_raw + pv } else { ev_raw };
+                    let bv = if cb < 0.0 { b_lo } else { b_hi };
+                    let v = ec * c.ln() + (1.0 - e_hi) * ll + bv * cb - vsx;
                     if v > best_lb {
                         best_lb = v;
                         worst_pt = (xm, lv, sv);
@@ -1126,7 +1260,7 @@ pub extern "C" fn rs_verify_super_barrier_bb(
 
     // Build initial 3D grid
     let stride = (nk_s / 80).max(1);
-    let mut xs_b = Vec::with_capacity(28 + nk_s + 2);
+    let mut xs_b = Vec::with_capacity(28 + nk_s + 4);
     push_geomspace(&mut xs_b, x_lo, x_cut, 28);
     for i in (0..nk_s).step_by(stride) {
         xs_b.push(ks_s[i]);
@@ -1139,6 +1273,9 @@ pub extern "C" fn rs_verify_super_barrier_bb(
     xs_b.push(x_cut);
     if ak_mode {
         xs_b.push(H_M);
+    }
+    if p_ruin > 0.0 && h_safe > x_lo && h_safe < x_cut {
+        xs_b.push(h_safe);
     }
     let xs_b = sorted_dedup(xs_b);
 
@@ -1184,6 +1321,8 @@ pub extern "C" fn rs_verify_super_barrier_bb(
             let xL = bxL[i]; let xR = bxR[i];
             let lL = bLL[i]; let lR = bLR[i];
             let sL = bsL[i]; let sR = bsR[i];
+            let has_ruin = p_ruin > 0.0 && xR <= h_safe;
+            let ruin_split_ok = p_ruin == 0.0 || xR <= h_safe || xL >= h_safe;
 
             let y_min = q_hi * xL + prod_y_f64(av, xL, lL, ak_mode);
             let y_max = q_hi * xR + prod_y_f64(av, xR, lR, ak_mode);
@@ -1191,8 +1330,10 @@ pub extern "C" fn rs_verify_super_barrier_bb(
             let ec_max = if c_max < 1.0 { e_lo } else { e_hi };
             let (vs_min, _) = vs_pwl.range_f64(xL, xR);
             let (ev_min, ev_max) = ev_pwl.range_f64(sL * y_min, sR * y_max);
-            let b_ev_max = ((if ev_min < 0.0 { b_lo } else { b_hi }) * ev_min)
-                .max((if ev_max < 0.0 { b_lo } else { b_hi }) * ev_max);
+            let cb_min = if has_ruin { omp * ev_min + pv } else { ev_min };
+            let cb_max = if has_ruin { omp * ev_max + pv } else { ev_max };
+            let b_ev_max = ((if cb_min < 0.0 { b_lo } else { b_hi }) * cb_min)
+                .max((if cb_max < 0.0 { b_lo } else { b_hi }) * cb_max);
             let ub_mono = (if sL >= 1.0 { -1e9 } else { ec_max * c_max.ln() })
                 + (1.0 - e_hi) * (1.0 - lL).max(1e-300).ln()
                 + (if sR <= 0.0 { -1e9 } else { b_ev_max })
@@ -1206,7 +1347,7 @@ pub extern "C" fn rs_verify_super_barrier_bb(
             let hs = 0.5 * (sR - sL);
             let c_min = ((1.0 - sR) * y_min).max(1e-300);
 
-            let valid_c = ub_mono > target && lR < 1.0 && sL > 0.0 && sR < 1.0 && c_min > 1e-30
+            let valid_c = ruin_split_ok && ub_mono > target && lR < 1.0 && sL > 0.0 && sR < 1.0 && c_min > 1e-30
                 && (!ak_mode || xR <= H_M || xL >= H_M);
 
             let mut ub = ub_mono;
@@ -1222,18 +1363,21 @@ pub extern "C" fn rs_verify_super_barrier_bb(
                 let (yx_lo0, yx_hi0) = prod_dy_dk_bounds_f64(av, xL, xR, lL, lR, ak_mode);
                 let yx_lo = q_hi + yx_lo0; let yx_hi = q_hi + yx_hi0;
                 let (yl_lo, yl_hi) = prod_dy_dl_bounds_f64(av, xL, xR, lL, lR, ak_mode);
-                let (dev_lo, dev_hi) = ev_pwl.deriv_bounds_f64(y_min_k, y_max_k);
+                let (dev_lo0, dev_hi0) = ev_pwl.deriv_bounds_f64(y_min_k, y_max_k);
+                let dev_lo = if has_ruin { omp * dev_lo0 } else { dev_lo0 };
+                let dev_hi = if has_ruin { omp * dev_hi0 } else { dev_hi0 };
                 let (dvs_lo, dvs_hi) = vs_pwl.deriv_bounds_f64(xL, xR);
-                let b_lo_v = if ev_max < 0.0 { b_lo } else { b_hi };
-                let b_hi_v = if ev_min >= 0.0 { b_hi } else { b_lo };
+                let b_lo_v = if cb_max < 0.0 { b_lo } else { b_hi };
+                let b_hi_v = if cb_min >= 0.0 { b_hi } else { b_lo };
                 let b_eff_lo = b_lo_v.min(b_hi_v);
                 let b_eff_hi = b_lo_v.max(b_hi_v);
                 let bdev_lo = (b_eff_lo * dev_lo).min(b_eff_hi * dev_lo);
                 let bdev_hi = (b_eff_lo * dev_hi).max(b_eff_hi * dev_hi);
 
-                let ev_m = ev_pwl.eval_f64(sm * ym_tot);
+                let ev_m_raw = ev_pwl.eval_f64(sm * ym_tot);
+                let cb_m = if has_ruin { omp * ev_m_raw + pv } else { ev_m_raw };
                 let vs_m = vs_pwl.eval_f64(xm);
-                let bm = if ev_m < 0.0 { b_lo } else { b_hi };
+                let bm = if cb_m < 0.0 { b_lo } else { b_hi };
                 let cross_c1 = c_min < 1.0 && c_max >= 1.0;
 
                 let mut best_eta_ub = -1e9f64;
@@ -1246,7 +1390,7 @@ pub extern "C" fn rs_verify_super_barrier_bb(
                     let ec = if pass_idx == 0 { e_lo } else { e_hi };
                     let ec_lo = if cross_c1 { e_lo } else { ec };
                     let ec_hi = if cross_c1 { e_hi } else { ec };
-                    let hm = ec * cm.ln() + (1.0 - e_hi) * (1.0 - lm).ln() + bm * ev_m - vs_m;
+                    let hm = ec * cm.ln() + (1.0 - e_hi) * (1.0 - lm).ln() + bm * cb_m - vs_m;
                     let a_lo_t = ec_lo / y_max + (sL * bdev_lo).min(sR * bdev_lo);
                     let a_hi_t = ec_hi / y_min + (sL * bdev_hi).max(sR * bdev_hi);
                     let p1x = a_lo_t * yx_lo; let p2x = a_lo_t * yx_hi; let p3x = a_hi_t * yx_lo; let p4x = a_hi_t * yx_hi;
@@ -1277,9 +1421,10 @@ pub extern "C" fn rs_verify_super_barrier_bb(
                     let cm_k = (1.0 - sm) * ym_k;
                     if cm_k > 1e-30 {
                         let ecm = if cm_k < 1.0 { e_lo } else { e_hi };
-                        let evk = ev_pwl.eval_f64(sm * ym_k);
-                        let bk = if evk < 0.0 { b_lo } else { b_hi };
-                        let lbv = ecm * cm_k.ln() + (1.0 - e_hi) * (1.0 - lm).ln() + bk * evk - vs_pwl.eval_f64(xm);
+                        let evk_raw = ev_pwl.eval_f64(sm * ym_k);
+                        let cbk = if p_ruin > 0.0 && xm < h_safe { omp * evk_raw + pv } else { evk_raw };
+                        let bk = if cbk < 0.0 { b_lo } else { b_hi };
+                        let lbv = ecm * cm_k.ln() + (1.0 - e_hi) * (1.0 - lm).ln() + bk * cbk - vs_pwl.eval_f64(xm);
                         lb_cand.push((lbv, xm, lm, sm));
                     }
                 }
@@ -1297,9 +1442,6 @@ pub extern "C" fn rs_verify_super_barrier_bb(
 
         if nxL.is_empty() {
             d_ub = Some(target);
-            if best_lb > -1e-4 {
-                // Collect diverse end points if borderline
-            }
             break;
         }
 
@@ -1379,7 +1521,10 @@ pub extern "C" fn rs_verify_super_barrier_bb(
     }
 
     let d_ub_v = d_ub.unwrap_or(last_kept_max).max(tail_max);
-    let boxes_iv_hi = audit_super_boxes_rs(&vs_pwl, &ev_pwl, &leaf_xL, &leaf_xR, &leaf_LL, &leaf_LR, &leaf_sL, &leaf_sR, av, q_hi, b_lo, b_hi, e_lo, e_hi, ak_mode);
+    let boxes_iv_hi = audit_super_boxes_rs(
+        &vs_pwl, &ev_pwl, &leaf_xL, &leaf_xR, &leaf_LL, &leaf_LR, &leaf_sL, &leaf_sR,
+        av, q_hi, b_lo, b_hi, e_lo, e_hi, ak_mode, p_ruin, v_ruin, h_safe,
+    );
     let d_ub_iv = tail_max.max(boxes_iv_hi);
     let iv_cert = d_ub_iv <= 0.0;
     let cert = d_ub_v <= 0.0 && iv_cert;
@@ -1404,6 +1549,24 @@ pub extern "C" fn rs_verify_super_barrier_bb(
         leaf_count: leaf_xL.len(),
         n_ce: n_write,
     }
+}
+
+#[no_mangle]
+pub extern "C" fn rs_verify_super_barrier_bb(
+    ks_s_ptr: *const f64, lks_s_ptr: *const f64, vals_s_ptr: *const f64, slopes_s_ptr: *const f64,
+    nk_s: usize, s_lo_s: f64, s_hi_s: f64,
+    ks_e_ptr: *const f64, lks_e_ptr: *const f64, vals_e_ptr: *const f64, slopes_e_ptr: *const f64,
+    nk_e: usize, s_lo_e: f64, s_hi_e: f64,
+    av: f64, q_hi: f64, b_lo: f64, b_hi: f64, e_lo: f64, e_hi: f64,
+    tail_max: f64, tol: f64, ak_mode_i: i32, max_iter: usize, max_boxes: usize,
+    ce_out: *mut f64, max_ce: usize,
+) -> BbOut {
+    rs_verify_super_barrier_bb_ext(
+        ks_s_ptr, lks_s_ptr, vals_s_ptr, slopes_s_ptr, nk_s, s_lo_s, s_hi_s,
+        ks_e_ptr, lks_e_ptr, vals_e_ptr, slopes_e_ptr, nk_e, s_lo_e, s_hi_e,
+        av, q_hi, b_lo, b_hi, e_lo, e_hi, 0.0, 0.0, H_M,
+        tail_max, tol, ak_mode_i, max_iter, max_boxes, ce_out, max_ce,
+    )
 }
 
 #[inline(always)]

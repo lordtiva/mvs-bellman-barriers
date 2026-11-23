@@ -192,13 +192,130 @@ class Interval:
 
     def ln(self):
         assert self.lo > 0
-        with localcontext() as ctx:
-            ctx.prec = self.PREC
-            ctx.rounding = ROUND_FLOOR
-            lo = self.lo.ln().next_minus()
-            ctx.rounding = ROUND_CEILING
-            hi = self.hi.ln().next_plus()
+        lo = self._ln_pt(self.lo, is_hi=False)
+        hi = self._ln_pt(self.hi, is_hi=True)
         return Interval._raw(lo, hi)
+
+    @classmethod
+    def _ln_lemma11_series(cls, m_lo: Decimal, m_hi: Decimal, n_terms: int = 55) -> Tuple[Decimal, Decimal]:
+        """MR Lemma 11 (Eq. F.5) rational enclosure of log(m) for 1 <= m_lo <= m_hi <= 2."""
+        with localcontext() as ctx:
+            ctx.prec = cls.PREC + 12
+            one = Decimal(1)
+            two = Decimal(2)
+            ctx.rounding = ROUND_FLOOR
+            v_lo = (m_lo - one) / (m_lo + one)
+            v2_lo = v_lo * v_lo
+            term_lo = v_lo
+            s_lo = v_lo
+            for j in range(1, n_terms):
+                term_lo = term_lo * v2_lo
+                s_lo = s_lo + term_lo / Decimal(2 * j + 1)
+            if v_lo >= Decimal(0):
+                out_lo = two * s_lo
+            else:
+                ctx.rounding = ROUND_CEILING
+                av_lo = -v_lo
+                av2_lo = av_lo * av_lo
+                av_tail = (av_lo ** (2 * n_terms + 1))
+                ctx.rounding = ROUND_FLOOR
+                den_lo = Decimal(2 * n_terms + 1) * (one - av2_lo)
+                ctx.rounding = ROUND_CEILING
+                rem_lo = (two * av_tail) / den_lo
+                ctx.rounding = ROUND_FLOOR
+                out_lo = two * s_lo - rem_lo
+
+            ctx.rounding = ROUND_CEILING
+            v_hi = (m_hi - one) / (m_hi + one)
+            v2_hi = v_hi * v_hi
+            term_hi = v_hi
+            s_hi = v_hi
+            for j in range(1, n_terms):
+                term_hi = term_hi * v2_hi
+                s_hi = s_hi + term_hi / Decimal(2 * j + 1)
+            v_tail = term_hi * v2_hi
+            ctx.rounding = ROUND_FLOOR
+            one_m_v2 = one - v2_hi
+            ctx.rounding = ROUND_CEILING
+            rem = (two * v_tail) / (Decimal(2 * n_terms + 1) * one_m_v2)
+            out_hi = two * s_hi + rem
+        return out_lo, out_hi
+
+    @classmethod
+    def _get_ln2_bounds(cls) -> Tuple[Decimal, Decimal]:
+        bounds = getattr(cls, "_LN2_BOUNDS", None)
+        if bounds is None:
+            bounds = cls._ln_lemma11_series(Decimal(2), Decimal(2), n_terms=60)
+            cls._LN2_BOUNDS = bounds
+        return bounds
+
+    @classmethod
+    def _ln_pt(cls, x: Decimal, is_hi: bool) -> Decimal:
+        if x == Decimal(1):
+            return Decimal(0)
+        with localcontext() as ctx:
+            ctx.prec = cls.PREC + 12
+            two = Decimal(2)
+            if x >= Decimal(1):
+                k = max(0, int(x).bit_length() - 1)
+                pow2 = two ** k
+                ctx.rounding = ROUND_FLOOR
+                m_lo = x / pow2
+                ctx.rounding = ROUND_CEILING
+                m_hi = x / pow2
+                while m_lo >= two:
+                    k += 1
+                    pow2 *= two
+                    ctx.rounding = ROUND_FLOOR
+                    m_lo = x / pow2
+                    ctx.rounding = ROUND_CEILING
+                    m_hi = x / pow2
+                while m_hi < Decimal(1):
+                    k -= 1
+                    pow2 //= two
+                    ctx.rounding = ROUND_FLOOR
+                    m_lo = x / pow2
+                    ctx.rounding = ROUND_CEILING
+                    m_hi = x / pow2
+            else:
+                ctx.rounding = ROUND_CEILING
+                inv_x = Decimal(1) / x
+                k = -int(inv_x).bit_length()
+                pow2 = two ** (-k)
+                ctx.rounding = ROUND_FLOOR
+                m_lo = x * pow2
+                ctx.rounding = ROUND_CEILING
+                m_hi = x * pow2
+                while m_hi < Decimal(1):
+                    k -= 1
+                    pow2 *= two
+                    ctx.rounding = ROUND_FLOOR
+                    m_lo = x * pow2
+                    ctx.rounding = ROUND_CEILING
+                    m_hi = x * pow2
+                while m_lo >= two:
+                    k += 1
+                    pow2 //= two
+                    ctx.rounding = ROUND_FLOOR
+                    m_lo = x * pow2
+                    ctx.rounding = ROUND_CEILING
+                    m_hi = x * pow2
+
+            ln_m_lo, ln_m_hi = cls._ln_lemma11_series(m_lo, m_hi, n_terms=55)
+            ln2_lo, ln2_hi = cls._get_ln2_bounds()
+            kd = Decimal(k)
+            if is_hi:
+                ctx.rounding = ROUND_CEILING
+                k_term = kd * (ln2_hi if k >= 0 else ln2_lo)
+                val = k_term + ln_m_hi
+            else:
+                ctx.rounding = ROUND_FLOOR
+                k_term = kd * (ln2_lo if k >= 0 else ln2_hi)
+                val = k_term + ln_m_lo
+        with localcontext() as ctx:
+            ctx.prec = cls.PREC
+            ctx.rounding = ROUND_CEILING if is_hi else ROUND_FLOOR
+            return +val
 
     def pow_int(self, n):
         assert isinstance(n, int) and n >= 0
@@ -907,12 +1024,17 @@ def ivf_deriv_bounds_logpwl(ks, slopes_lo, slopes_hi, s_lo: float, s_hi: float, 
 
 @njit(cache=True)
 def audit_staying_boxes_ivf(
-    ks, lks, vals, slopes, s_lo: float, s_hi: float,
+    ks_l, lks_l, vals_l, slopes_l, s_lo_l: float, s_hi_l: float,
+    ks_e, lks_e, vals_e, slopes_e, s_lo_e: float, s_hi_e: float,
     bxL, bxR, byL, byR, bLL, bLR,
     A_hi: float, q_hi: float, b_lo: float, b_hi: float, e_lo: float, e_hi: float,
+    p_ruin: float = 0.0, v_ruin: float = 0.0,
 ) -> float:
     """100% outward-rounded IEEE-754 audit over all 3D leaf boxes for Staying Barrier."""
-    lks_lo, lks_hi, slopes_lo, slopes_hi = ivf_precompute_pwl(ks, vals)
+    lks_l_lo, lks_l_hi, slopes_l_lo, slopes_l_hi = ivf_precompute_pwl(ks_l, vals_l)
+    lks_e_lo, lks_e_hi, slopes_e_lo, slopes_e_hi = ivf_precompute_pwl(ks_e, vals_e)
+    omp0, omp1 = ivf_sub(1.0, 1.0, p_ruin, p_ruin)
+    pv0, pv1 = ivf_mul(p_ruin, p_ruin, v_ruin, v_ruin)
     n = len(bxL)
     global_ub = -1e300
     for i in range(n):
@@ -926,15 +1048,17 @@ def audit_staying_boxes_ivf(
         _, Ym1 = ivf_add(qx1, qx1, Y1, Y1)
         c0, c1 = ivf_sub(Ym0, Ym1, yL, yR)
         if c1 <= 0.0:
-            # Strictly infeasible box: c <= 0 everywhere
             continue
 
         # Monotone bound
-        Bx0, _ = ivf_range_logpwl(ks, lks_lo, lks_hi, vals, slopes_lo, slopes_hi, s_lo, s_hi, xL, xR)
-        By0, By1 = ivf_range_logpwl(ks, lks_lo, lks_hi, vals, slopes_lo, slopes_hi, s_lo, s_hi, yL, yR)
-        bBy_a0, bBy_a1 = ivf_mul(b_lo if By0 < 0.0 else b_hi, b_lo if By0 < 0.0 else b_hi, By0, By0)
-        bBy_b0, bBy_b1 = ivf_mul(b_lo if By1 < 0.0 else b_hi, b_lo if By1 < 0.0 else b_hi, By1, By1)
-        bBy1 = max(bBy_a1, bBy_b1)
+        Bx0, _ = ivf_range_logpwl(ks_l, lks_l_lo, lks_l_hi, vals_l, slopes_l_lo, slopes_l_hi, s_lo_l, s_hi_l, xL, xR)
+        By0, By1 = ivf_range_logpwl(ks_e, lks_e_lo, lks_e_hi, vals_e, slopes_e_lo, slopes_e_hi, s_lo_e, s_hi_e, yL, yR)
+        if p_ruin > 0.0:
+            t0, t1 = ivf_mul(omp0, omp1, By0, By1)
+            By0, By1 = ivf_add(t0, t1, pv0, pv1)
+        ba0 = b_lo if By0 < 0.0 else b_hi
+        ba1 = b_lo if By1 < 0.0 else b_hi
+        bBy1 = max(ivf_mul(ba0, ba0, By0, By0)[1], ivf_mul(ba1, ba1, By1, By1)[1])
         _, lc1 = ivf_log(c1, c1)
         ec_hi = e_lo if c1 < 1.0 else e_hi
         _, ulc1 = ivf_mul(ec_hi, ec_hi, lc1, lc1)
@@ -972,22 +1096,27 @@ def audit_staying_boxes_ivf(
                 lcm0, lcm1 = ivf_log(cm0, cm1)
                 omLm0, omLm1 = ivf_sub(1.0, 1.0, Lm, Lm)
                 lLm0, lLm1 = ivf_log(omLm0, omLm1)
-                Bxm0, Bxm1 = ivf_eval_logpwl_pt(ks, lks_lo, lks_hi, vals, slopes_lo, slopes_hi, s_lo, s_hi, xm)
-                Bym0, Bym1 = ivf_eval_logpwl_pt(ks, lks_lo, lks_hi, vals, slopes_lo, slopes_hi, s_lo, s_hi, ym)
+                Bxm0, Bxm1 = ivf_eval_logpwl_pt(ks_l, lks_l_lo, lks_l_hi, vals_l, slopes_l_lo, slopes_l_hi, s_lo_l, s_hi_l, xm)
+                Bym0, Bym1 = ivf_eval_logpwl_pt(ks_e, lks_e_lo, lks_e_hi, vals_e, slopes_e_lo, slopes_e_hi, s_lo_e, s_hi_e, ym)
+                if p_ruin > 0.0:
+                    tm0, tm1 = ivf_mul(omp0, omp1, Bym0, Bym1)
+                    Bym0, Bym1 = ivf_add(tm0, tm1, pv0, pv1)
                 ome0, ome1 = ivf_sub(1.0, 1.0, e_hi, e_hi)
                 _, uLm1 = ivf_mul(ome0, ome1, lLm0, lLm1)
-                # beta * B(y_m) upper
-                b_m_lo, b_m_hi = (b_lo, b_lo) if Bym1 < 0.0 else ((b_hi, b_hi) if Bym0 >= 0.0 else (b_lo, b_hi))
-                _, bBym1 = ivf_mul(b_m_lo, b_m_hi, Bym0, Bym1)
+                bm0 = b_lo if Bym1 < 0.0 else (b_hi if Bym0 >= 0.0 else b_lo)
+                bm1 = b_lo if Bym1 < 0.0 else b_hi
+                _, bBym1 = ivf_mul(bm0, bm1, Bym0, Bym1)
 
                 Yx0, Yx1 = ivf_dF_dK_box(A_hi, xL, xR, LL, LR)
                 Yx0, Yx1 = ivf_add(q_hi, q_hi, Yx0, Yx1)
                 YL0, YL1 = ivf_dF_dL_box(A_hi, xL, xR, LL, LR)
-                dBx0, dBx1 = ivf_deriv_bounds_logpwl(ks, slopes_lo, slopes_hi, s_lo, s_hi, xL, xR)
-                dBy0, dBy1 = ivf_deriv_bounds_logpwl(ks, slopes_lo, slopes_hi, s_lo, s_hi, yL, yR)
-                b_eff0 = b_lo if By1 < 0.0 else (b_hi if By0 >= 0.0 else b_lo)
-                b_eff1 = b_lo if By1 < 0.0 else (b_hi if By0 >= 0.0 else b_hi)
-                bdBy0, bdBy1 = ivf_mul(b_eff0, b_eff1, dBy0, dBy1)
+                dBx0, dBx1 = ivf_deriv_bounds_logpwl(ks_l, slopes_l_lo, slopes_l_hi, s_lo_l, s_hi_l, xL, xR)
+                dBy0, dBy1 = ivf_deriv_bounds_logpwl(ks_e, slopes_e_lo, slopes_e_hi, s_lo_e, s_hi_e, yL, yR)
+                if p_ruin > 0.0:
+                    dBy0, dBy1 = ivf_mul(omp0, omp1, dBy0, dBy1)
+                bef0 = b_lo if By1 < 0.0 else (b_hi if By0 >= 0.0 else b_lo)
+                bef1 = b_lo if By1 < 0.0 else b_hi
+                bdBy0, bdBy1 = ivf_mul(bef0, bef1, dBy0, dBy1)
 
                 invc0, invc1 = ivf_div(1.0, 1.0, c0, c1)
                 omLR0, omLR1 = ivf_sub(1.0, 1.0, LR, LR)
@@ -1043,10 +1172,13 @@ def audit_super_boxes_ivf(
     bxL, bxR, bLL, bLR, bsL, bsR,
     Av: float, q_hi: float, bL: float, bR: float, eL: float, eU: float,
     ak_mode: bool, H_v: float,
+    p_ruin: float = 0.0, v_ruin: float = 0.0, h_safe: float = 0.28,
 ) -> float:
     """100% outward-rounded IEEE-754 audit over all 3D leaf boxes for Super-Barrier."""
     lks_s_lo, lks_s_hi, slopes_s_lo, slopes_s_hi = ivf_precompute_pwl(ks_s, vals_s)
     lks_e_lo, lks_e_hi, slopes_e_lo, slopes_e_hi = ivf_precompute_pwl(ks_e, vals_e)
+    omp0, omp1 = ivf_sub(1.0, 1.0, p_ruin, p_ruin)
+    pv0, pv1 = ivf_mul(p_ruin, p_ruin, v_ruin, v_ruin)
     n = len(bxL)
     global_ub = -1e300
     for i in range(n):
@@ -1055,6 +1187,7 @@ def audit_super_boxes_ivf(
         sL = bsL[i]; sR = bsR[i]
         if sL >= 1.0 or sR <= 0.0 or LL >= 1.0:
             continue
+        has_ruin = (p_ruin > 0.0) and (xR <= h_safe)
 
         Y0, Y1 = ivf_prod_Y_box(Av, xL, xR, LL, LR, ak_mode, H_v)
         qx0, _ = ivf_mul(q_hi, q_hi, xL, xL)
@@ -1080,12 +1213,20 @@ def audit_super_boxes_ivf(
         ev0 = 0.0; ev1 = 0.0
         if y0 > 0.0:
             ev0, ev1 = ivf_range_logpwl(ks_e, lks_e_lo, lks_e_hi, vals_e, slopes_e_lo, slopes_e_hi, s_lo_e, s_hi_e, y0, y1)
-            bev_a = ivf_mul(bL if ev0 < 0.0 else bR, bL if ev0 < 0.0 else bR, ev0, ev0)[1]
-            bev_b = ivf_mul(bL if ev1 < 0.0 else bR, bL if ev1 < 0.0 else bR, ev1, ev1)[1]
-            b_ev1 = max(bev_a, bev_b)
+            if has_ruin:
+                t0, t1 = ivf_mul(omp0, omp1, ev0, ev1)
+                ev0, ev1 = ivf_add(t0, t1, pv0, pv1)
+            ba0 = bL if ev0 < 0.0 else bR
+            ba1 = bL if ev1 < 0.0 else bR
+            b_ev1 = max(ivf_mul(ba0, ba0, ev0, ev0)[1], ivf_mul(ba1, ba1, ev1, ev1)[1])
         else:
             _, ev1 = ivf_eval_logpwl_pt(ks_e, lks_e_lo, lks_e_hi, vals_e, slopes_e_lo, slopes_e_hi, s_lo_e, s_hi_e, y1)
-            b_ev1 = ivf_mul(bL if ev1 < 0.0 else bR, bL if ev1 < 0.0 else bR, ev1, ev1)[1]
+            if has_ruin:
+                t0, t1 = ivf_mul(omp0, omp1, ev1, ev1)
+                ev0_r, ev1_r = ivf_add(t0, t1, pv0, pv1)
+                b_ev1 = ivf_mul(bL if ev1_r < 0.0 else bR, bL if ev1_r < 0.0 else bR, ev0_r, ev1_r)[1]
+            else:
+                b_ev1 = ivf_mul(bL if ev1 < 0.0 else bR, bL if ev1 < 0.0 else bR, ev1, ev1)[1]
 
         ec_hi = eL if c_max < 1.0 else eU
         _, lc1 = ivf_log(c_max, c_max)
@@ -1099,7 +1240,8 @@ def audit_super_boxes_ivf(
         ub_mono = ivf_sub(t2, t2, Vs0, Vs0)[1]
         box_ub = ub_mono
 
-        can_cent = (LR < 1.0) and (sL > 0.0) and (y0 > 0.0) and (sR < 1.0) and (c_min > 1e-30) and ((not ak_mode) or (xR <= H_v) or (xL >= H_v))
+        ruin_ok = (p_ruin == 0.0) or (xR <= h_safe) or (xL >= h_safe)
+        can_cent = ruin_ok and (LR < 1.0) and (sL > 0.0) and (y0 > 0.0) and (sR < 1.0) and (c_min > 1e-30) and ((not ak_mode) or (xR <= H_v) or (xL >= H_v))
         if can_cent:
             xm = 0.5 * (xL + xR)
             Lm = 0.5 * (LL + LR)
@@ -1121,16 +1263,18 @@ def audit_super_boxes_ivf(
                 omeU0, omeU1 = ivf_sub(1.0, 1.0, eU, eU)
                 _, uLm1 = ivf_mul(omeU0, omeU1, lLm0, lLm1)
                 evm0, evm1 = ivf_range_logpwl(ks_e, lks_e_lo, lks_e_hi, vals_e, slopes_e_lo, slopes_e_hi, s_lo_e, s_hi_e, ym0, ym1)
+                if has_ruin:
+                    tm0, tm1 = ivf_mul(omp0, omp1, evm0, evm1)
+                    evm0, evm1 = ivf_add(tm0, tm1, pv0, pv1)
                 Vsm0, Vsm1 = ivf_eval_logpwl_pt(ks_s, lks_s_lo, lks_s_hi, vals_s, slopes_s_lo, slopes_s_hi, s_lo_s, s_hi_s, xm)
                 bm0 = bL if evm1 < 0.0 else (bR if evm0 >= 0.0 else bL)
-                bm1 = bL if evm1 < 0.0 else (bR if evm0 >= 0.0 else bR)
+                bm1 = bL if evm1 < 0.0 else bR
                 _, bevm1 = ivf_mul(bm0, bm1, evm0, evm1)
 
                 if not ak_mode or xR <= H_v:
                     Yx0, Yx1 = ivf_dF_dK_box(Av, xL, xR, LL, LR)
                     YL0, YL1 = ivf_dF_dL_box(Av, xL, xR, LL, LR)
                 else:
-                    # AK mode on [H_v, inf)
                     Fh0, _ = ivf_F_A_pt(Av, H_v, LL)
                     _, Fh1 = ivf_F_A_pt(Av, H_v, LR)
                     Yx0, Yx1 = ivf_div(Fh0, Fh1, H_v, H_v)
@@ -1140,10 +1284,12 @@ def audit_super_boxes_ivf(
                 Yx0, Yx1 = ivf_add(q_hi, q_hi, Yx0, Yx1)
 
                 dEV0, dEV1 = ivf_deriv_bounds_logpwl(ks_e, slopes_e_lo, slopes_e_hi, s_lo_e, s_hi_e, y0, y1)
+                if has_ruin:
+                    dEV0, dEV1 = ivf_mul(omp0, omp1, dEV0, dEV1)
                 dVs0, dVs1 = ivf_deriv_bounds_logpwl(ks_s, slopes_s_lo, slopes_s_hi, s_lo_s, s_hi_s, xL, xR)
-                beff0 = bL if ev1 < 0.0 else (bR if ev0 >= 0.0 else bL)
-                beff1 = bL if ev1 < 0.0 else (bR if ev0 >= 0.0 else bR)
-                bdEV0, bdEV1 = ivf_mul(beff0, beff1, dEV0, dEV1)
+                bef0 = bL if ev1 < 0.0 else (bR if ev0 >= 0.0 else bL)
+                bef1 = bL if ev1 < 0.0 else bR
+                bdEV0, bdEV1 = ivf_mul(bef0, bef1, dEV0, dEV1)
                 sbd0, sbd1 = ivf_mul(sL, sR, bdEV0, bdEV1)
                 Ybd0, Ybd1 = ivf_mul(Y0, Y1, bdEV0, bdEV1)
 

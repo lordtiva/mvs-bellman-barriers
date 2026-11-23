@@ -97,20 +97,24 @@ def _load_rust_verifier():
         c_sz = ctypes.c_size_t
         c_i32 = ctypes.c_int32
 
-        lib.rs_verify_staying_barrier_bb.argtypes = [
+        lib.rs_verify_staying_barrier_bb_ext.argtypes = [
             c_dbl_p, c_dbl_p, c_dbl_p, c_dbl_p, c_sz, c_dbl, c_dbl,
+            c_dbl_p, c_dbl_p, c_dbl_p, c_dbl_p, c_sz, c_dbl, c_dbl,
+            c_dbl, c_dbl,
             c_dbl, c_dbl, c_dbl, c_dbl, c_dbl, c_dbl,
+            c_dbl, c_dbl,
             c_dbl, c_sz, c_dbl_p, c_sz,
         ]
-        lib.rs_verify_staying_barrier_bb.restype = _RustBbOut
+        lib.rs_verify_staying_barrier_bb_ext.restype = _RustBbOut
 
-        lib.rs_verify_super_barrier_bb.argtypes = [
+        lib.rs_verify_super_barrier_bb_ext.argtypes = [
             c_dbl_p, c_dbl_p, c_dbl_p, c_dbl_p, c_sz, c_dbl, c_dbl,
             c_dbl_p, c_dbl_p, c_dbl_p, c_dbl_p, c_sz, c_dbl, c_dbl,
             c_dbl, c_dbl, c_dbl, c_dbl, c_dbl, c_dbl,
+            c_dbl, c_dbl, c_dbl,
             c_dbl, c_dbl, c_i32, c_sz, c_sz, c_dbl_p, c_sz,
         ]
-        lib.rs_verify_super_barrier_bb.restype = _RustBbOut
+        lib.rs_verify_super_barrier_bb_ext.restype = _RustBbOut
 
         lib.rs_verify_adverse_exit_bb.argtypes = [
             c_dbl_p, c_dbl_p, c_dbl_p, c_dbl_p, c_sz, c_dbl, c_dbl,
@@ -190,24 +194,39 @@ def verify_staying_barrier_bb(
     e_hi: float = ETA_MAX,
     tol: float = 2e-4,
     max_iter: int = 45,
+    B_ev_pwl: Optional[Dict[str, object]] = None,
+    b_m: float = B_M,
+    h_m: float = H_M,
+    p_ruin: float = 0.0,
+    v_ruin: float = 0.0,
 ) -> Dict[str, object]:
     """
-    Certify staying Bellman inequality on ALL (x, y, L) in [B_M, H_M]^2 x [0, 1)
-    and full parameter box, followed by 100% Numba IEEE-754 outward-rounded audit
-    of EVERY leaf box.
+    Certify staying Bellman inequality on ALL (x, y, L) in [b_m, h_m]^2 x [0, 1)
+    and full parameter box, followed by 100% outward-rounded interval audit
+    of EVERY leaf box. Supports coupled/nonstationary B_ev_pwl and ruin p_ruin.
     """
+    B_ev = B_pwl if B_ev_pwl is None else B_ev_pwl
     if using_rust_verifier():
-        ks_b = np.ascontiguousarray(B_pwl["ks"], dtype=np.float64)
-        lks_b = np.ascontiguousarray(B_pwl["lks"], dtype=np.float64)
-        vals_b = np.ascontiguousarray(B_pwl["vals"], dtype=np.float64)
-        sl_b = np.ascontiguousarray(B_pwl["slopes"], dtype=np.float64)
+        ks_l = np.ascontiguousarray(B_pwl["ks"], dtype=np.float64)
+        lks_l = np.ascontiguousarray(B_pwl["lks"], dtype=np.float64)
+        vals_l = np.ascontiguousarray(B_pwl["vals"], dtype=np.float64)
+        sl_l = np.ascontiguousarray(B_pwl["slopes"], dtype=np.float64)
+        ks_e = np.ascontiguousarray(B_ev["ks"], dtype=np.float64)
+        lks_e = np.ascontiguousarray(B_ev["lks"], dtype=np.float64)
+        vals_e = np.ascontiguousarray(B_ev["vals"], dtype=np.float64)
+        sl_e = np.ascontiguousarray(B_ev["slopes"], dtype=np.float64)
         c_dbl_p = ctypes.POINTER(ctypes.c_double)
         ce_buf = np.empty(64 * 4, dtype=np.float64)
-        res = _RUST_LIB.rs_verify_staying_barrier_bb(
-            ks_b.ctypes.data_as(c_dbl_p), lks_b.ctypes.data_as(c_dbl_p),
-            vals_b.ctypes.data_as(c_dbl_p), sl_b.ctypes.data_as(c_dbl_p),
-            len(ks_b), float(B_pwl["s_lo"]), float(B_pwl["s_hi"]),
+        res = _RUST_LIB.rs_verify_staying_barrier_bb_ext(
+            ks_l.ctypes.data_as(c_dbl_p), lks_l.ctypes.data_as(c_dbl_p),
+            vals_l.ctypes.data_as(c_dbl_p), sl_l.ctypes.data_as(c_dbl_p),
+            len(ks_l), float(B_pwl["s_lo"]), float(B_pwl["s_hi"]),
+            ks_e.ctypes.data_as(c_dbl_p), lks_e.ctypes.data_as(c_dbl_p),
+            vals_e.ctypes.data_as(c_dbl_p), sl_e.ctypes.data_as(c_dbl_p),
+            len(ks_e), float(B_ev["s_lo"]), float(B_ev["s_hi"]),
+            float(b_m), float(h_m),
             float(A_hi), float(q_hi), float(b_lo), float(b_hi), float(e_lo), float(e_hi),
+            float(p_ruin), float(v_ruin),
             float(tol), int(max_iter), ce_buf.ctypes.data_as(c_dbl_p), 64,
         )
         ces = [(float(ce_buf[4 * i]), float(ce_buf[4 * i + 1]), float(ce_buf[4 * i + 2]), float(ce_buf[4 * i + 3])) for i in range(res.n_ce)]
@@ -222,14 +241,17 @@ def verify_staying_barrier_bb(
         }
 
     smin_B, smax_B = build_slope_tables(B_pwl["slopes"])
+    smin_Be, smax_Be = build_slope_tables(B_ev["slopes"])
+    omp = 1.0 - p_ruin
+    pv = p_ruin * v_ruin
 
-    xg = np.linspace(B_M, H_M, 45)
-    yg = np.linspace(B_M, H_M, 45)
+    xg = np.linspace(b_m, h_m, 45)
+    yg = np.linspace(b_m, h_m, 45)
     Lg = np.concatenate([[0.0], np.linspace(0.05, 0.999, 30)])
     best_lb = -1e9
-    worst_pt = (B_M, B_M, 0.5)
+    worst_pt = (b_m, b_m, 0.5)
     Bx_g = eval_logpwl(B_pwl, xg)
-    By_g = eval_logpwl(B_pwl, yg)
+    By_g = omp * eval_logpwl(B_ev, yg) + pv
     by_term = np.where(By_g < 0.0, b_lo, b_hi) * By_g
     for ix, xv in enumerate(xg):
         Y = q_hi * xv + F_A(A_hi, xv, Lg)
@@ -245,11 +267,12 @@ def verify_staying_barrier_bb(
             il, iy = np.unravel_index(np.argmax(val), val.shape)
             worst_pt = (float(xv), float(yg[iy]), float(Lg[il]))
 
-    target = best_lb + tol
+    target = max(best_lb + tol, -2.0e-4) if best_lb < -tol else (best_lb + tol)
 
     ks_m = B_pwl["ks"]
-    xs = np.unique(np.concatenate([[B_M], ks_m[(ks_m > B_M) & (ks_m < H_M)], [H_M], np.linspace(B_M, H_M, 19)]))
-    ys = np.unique(np.concatenate([[B_M], ks_m[(ks_m > B_M) & (ks_m < H_M)], [H_M], np.linspace(B_M, H_M, 19)]))
+    ks_me = B_ev["ks"]
+    xs = np.unique(np.concatenate([[b_m], ks_m[(ks_m > b_m) & (ks_m < h_m)], [h_m], np.linspace(b_m, h_m, 19)]))
+    ys = np.unique(np.concatenate([[b_m], ks_me[(ks_me > b_m) & (ks_me < h_m)], [h_m], np.linspace(b_m, h_m, 19)]))
     Ls = np.concatenate([[0.0, 0.15, 0.35, 0.55, 0.72, 0.85, 0.94, 0.985, 0.998, 1.0]])
 
     gxL, gyL, gLL = np.meshgrid(xs[:-1], ys[:-1], Ls[:-1], indexing="ij")
@@ -277,7 +300,9 @@ def verify_staying_barrier_bb(
 
         ec_max = np.where(c_max < 1.0, e_lo, e_hi)
         Bx_min, _ = range_bounds_logpwl(B_pwl, bxL, bxR)
-        By_min, By_max = range_bounds_logpwl(B_pwl, byL, byR)
+        By_min0, By_max0 = range_bounds_logpwl(B_ev, byL, byR)
+        By_min = omp * By_min0 + pv
+        By_max = omp * By_max0 + pv
         b_By_max = np.maximum(np.where(By_min < 0.0, b_lo * By_min, b_hi * By_min),
                               np.where(By_max < 0.0, b_lo * By_max, b_hi * By_max))
         ub_mono = np.where(
@@ -315,10 +340,12 @@ def verify_staying_barrier_bb(
             YL_lo, YL_hi = prod_dY_dL_bounds(A_hi, xLv, xRv, LLv, LRv, ak_mode=False)
 
             dBx_lo, dBx_hi = deriv_bounds_logpwl(B_pwl, smin_B, smax_B, xLv, xRv)
-            dBy_lo, dBy_hi = deriv_bounds_logpwl(B_pwl, smin_B, smax_B, yLv, yRv)
+            dBy_lo0, dBy_hi0 = deriv_bounds_logpwl(B_ev, smin_Be, smax_Be, yLv, yRv)
+            dBy_lo = omp * dBy_lo0
+            dBy_hi = omp * dBy_hi0
 
             Bx_m = eval_logpwl(B_pwl, xmv)
-            By_m = eval_logpwl(B_pwl, ymv)
+            By_m = omp * eval_logpwl(B_ev, ymv) + pv
             By_v_min, By_v_max = By_min[valid_c], By_max[valid_c]
             b_lo_v = np.where(By_v_max < 0.0, b_lo, b_hi)
             b_hi_v = np.where(By_v_min >= 0.0, b_hi, b_lo)
@@ -371,7 +398,7 @@ def verify_staying_barrier_bb(
         cm_k = q_hi * xm + F_A(A_hi, xm, Lm) - ym
         ok_k = (cm_k > 1e-15) & (Lm < 1.0)
         ecm_k = np.where(cm_k < 1.0, e_lo, e_hi)
-        Bym_k = eval_logpwl(B_pwl, ym)
+        Bym_k = omp * eval_logpwl(B_ev, ym) + pv
         lb_k = np.where(
             ok_k,
             ecm_k * np.log(np.maximum(cm_k, 1e-300))
@@ -383,18 +410,18 @@ def verify_staying_barrier_bb(
         i_best = int(np.argmax(lb_k))
         if lb_k[i_best] > best_lb:
             best_lb = float(lb_k[i_best])
-            target = best_lb + tol
+            target = max(best_lb + tol, -2.0e-4) if best_lb < -tol else (best_lb + tol)
             counterexamples.append((float(xm[i_best]), float(ym[i_best]), float(Lm[i_best]), best_lb))
 
-        if len(bxL) > 80_000:
+        if len(bxL) > 250_000:
             leaf_xL.append(bxL); leaf_xR.append(bxR)
             leaf_yL.append(byL); leaf_yR.append(byR)
             leaf_LL.append(bLL); leaf_LR.append(bLR)
             rem_appended = True
             break
-        ex = bxR - bxL
-        ey = byR - byL
-        eL_s = (bLR - bLL) / np.maximum(1.0 - bLR, 1e-3)
+        ex = (bxR - bxL) / bxL
+        ey = (byR - byL) / byL
+        eL_s = 0.25 * (bLR - bLL) / np.maximum(1.0 - bLR, 1e-3)
         m1 = (ex >= ey) & (ex >= eL_s)
         m2 = (~m1) & (ey >= eL_s)
         m3 = (~m1) & (~m2)
@@ -423,8 +450,11 @@ def verify_staying_barrier_bb(
     d_ub_iv = float(audit_staying_boxes_ivf(
         B_pwl["ks"], B_pwl["lks"], B_pwl["vals"], B_pwl["slopes"],
         float(B_pwl["s_lo"]), float(B_pwl["s_hi"]),
+        B_ev["ks"], B_ev["lks"], B_ev["vals"], B_ev["slopes"],
+        float(B_ev["s_lo"]), float(B_ev["s_hi"]),
         all_xL, all_xR, all_yL, all_yR, all_LL, all_LR,
         float(A_hi), float(q_hi), float(b_lo), float(b_hi), float(e_lo), float(e_hi),
+        float(p_ruin), float(v_ruin),
     ))
     iv_certified = bool(d_ub_iv <= 0.0)
 
@@ -520,13 +550,17 @@ def verify_super_barrier_bb(
     ak_mode: bool = False,
     max_iter: int = 55,
     max_boxes: int = 350_000,
+    p_ruin: float = 0.0,
+    v_ruin: float = 0.0,
+    h_safe: float = H_M,
 ) -> Dict[str, object]:
     """
     Continuously certify log-PWL super-barrier V_self(K) with continuation EV(K)
     on ALL (0, infinity) x [bL, bR], with:
       - Explicit check that EV_pwl is non-decreasing everywhere,
       - 50-digit Decimal Interval audit of lower and upper analytical tails,
-      - 100% Numba IEEE-754 outward-rounded audit of EVERY 3D leaf box.
+      - 100% outward-rounded interval audit of EVERY 3D leaf box,
+      - Optional state-dependent ruin p(K) = p_ruin * 1_{K < h_safe} with V_ruin.
     """
     ks_s = V_self_pwl["ks"]
     ks_e = EV_pwl["ks"]
@@ -547,6 +581,8 @@ def verify_super_barrier_bb(
 
     smin_self, smax_self = build_slope_tables(V_self_pwl["slopes"])
     smin_EV, smax_EV = build_slope_tables(EV_pwl["slopes"])
+    omp = 1.0 - p_ruin
+    pv = p_ruin * v_ruin
 
     # 50-digit Decimal Interval analytical tails on (0, x_lo] and [x_cut, inf)
     iv_Av = Interval(str(Av))
@@ -565,22 +601,28 @@ def verify_super_barrier_bb(
     iv_vs_end = Interval(float(V_self_pwl["vals"][-1]))
     iv_ve_end = Interval(float(EV_pwl["vals"][-1]))
     iv_h = Interval(str(H_M))
+    iv_p_ruin = Interval(str(p_ruin))
+    iv_omp = iv_one - iv_p_ruin
+    iv_pv = iv_p_ruin * Interval(str(v_ruin))
 
     iv_r_top = iv_q + iv_F_A(iv_Av, iv_xlo, iv_one) / iv_xlo
     assert iv_r_top.hi < Decimal("1"), f"Lower tail contraction failed at x_lo={x_lo}: r_top={iv_r_top.hi}"
 
     def iv_tails_for_b(bv_float: float) -> Tuple[Interval, Interval]:
         iv_b = Interval(str(bv_float))
-        iv_c_slo = iv_eL + iv_b * iv_s_tail_e
+        iv_b_lo_eff = iv_b * iv_omp if (p_ruin > 0.0 and x_lo <= h_safe) else iv_b
+        iv_c_slo = iv_eL + iv_b_lo_eff * iv_s_tail_e
         assert (iv_c_slo - iv_s_tail).lo >= Decimal("0"), (
             f"Lower tail log(x) coeff negative at b={bv_float}: {(iv_c_slo - iv_s_tail).lo}"
         )
-        iv_s_lo_opt = (iv_b * iv_s_tail_e) / iv_c_slo
+        iv_s_lo_opt = (iv_b_lo_eff * iv_s_tail_e) / iv_c_slo
+        iv_shift_lo = (iv_b * iv_pv) if (p_ruin > 0.0 and x_lo <= h_safe) else Interval("0")
         iv_tail_lo = (
             iv_eL * ((iv_one - iv_s_lo_opt) * iv_xlo).ln()
-            + iv_b * iv_s_tail_e * iv_s_lo_opt.ln()
+            + iv_b_lo_eff * iv_s_tail_e * iv_s_lo_opt.ln()
             + iv_c_slo * iv_r_top.ln()
-            + iv_b * iv_ve0
+            + iv_b_lo_eff * iv_ve0
+            + iv_shift_lo
             - iv_vs0
         )
 
@@ -690,7 +732,7 @@ def verify_super_barrier_bb(
         sl_e_c = np.ascontiguousarray(EV_pwl["slopes"], dtype=np.float64)
         c_dbl_p = ctypes.POINTER(ctypes.c_double)
         ce_buf = np.empty(64 * 4, dtype=np.float64)
-        res = _RUST_LIB.rs_verify_super_barrier_bb(
+        res = _RUST_LIB.rs_verify_super_barrier_bb_ext(
             ks_s_c.ctypes.data_as(c_dbl_p), lks_s_c.ctypes.data_as(c_dbl_p),
             vals_s_c.ctypes.data_as(c_dbl_p), sl_s_c.ctypes.data_as(c_dbl_p),
             len(ks_s_c), float(s_tail), float(D_hi),
@@ -698,6 +740,7 @@ def verify_super_barrier_bb(
             vals_e_c.ctypes.data_as(c_dbl_p), sl_e_c.ctypes.data_as(c_dbl_p),
             len(ks_e_c), float(s_tail_e), float(D_hi_e),
             float(Av), float(q_hi), float(bL), float(bR), float(eL), float(eU),
+            float(p_ruin), float(v_ruin), float(h_safe),
             float(tail_max), float(tol), 1 if ak_mode else 0, int(max_iter), int(max_boxes),
             ce_buf.ctypes.data_as(c_dbl_p), 64,
         )
@@ -724,6 +767,8 @@ def verify_super_barrier_bb(
     y_g = Y_g[:, :, None] * sg[None, None, :]
     ec_g = np.where(c_g < 1.0, eL, eU)
     ev_g = eval_logpwl(EV_pwl, y_g)
+    if p_ruin > 0.0:
+        ev_g = np.where(xg[:, None, None] < h_safe, omp * ev_g + pv, ev_g)
     b_g = np.where(ev_g < 0.0, bL, bR)
     val_g = ec_g * np.log(c_g) + (1.0 - eU) * np.log(1.0 - Lg[None, :, None]) + b_g * ev_g - eval_logpwl(V_self_pwl, xg[:, None, None])
 
@@ -738,6 +783,8 @@ def verify_super_barrier_bb(
         cm_s = np.maximum(Ym_s * (1.0 - sm_s), 1e-300)
         ecm_s = np.where(cm_s < 1.0, eL, eU)
         ev_ms = eval_logpwl(EV_pwl, Ym_s * sm_s)
+        if p_ruin > 0.0:
+            ev_ms = np.where(xm_s < h_safe, omp * ev_ms + pv, ev_ms)
         b_ms = np.where(ev_ms < 0.0, bL, bR)
         val_ms = ecm_s * np.log(cm_s) + (1.0 - eU) * np.log(1.0 - Lm_s) + b_ms * ev_ms - eval_logpwl(V_self_pwl, xm_s)
         imx, imL, ims = np.unravel_index(np.argmax(val_ms), val_ms.shape)
@@ -754,6 +801,8 @@ def verify_super_barrier_bb(
     ss_b = np.concatenate([[0.0, 0.3, 0.65], np.linspace(0.75, 0.99, 8, endpoint=False), [0.99, 0.996, 0.998, 0.999, 1.0]])
     if ak_mode:
         xs_b = np.unique(np.concatenate([xs_b, [H_M]]))
+    if p_ruin > 0.0 and x_lo < h_safe < x_cut:
+        xs_b = np.unique(np.concatenate([xs_b, [h_safe]]))
     gxL, gLL, gsL = np.meshgrid(xs_b[:-1], Ls_b[:-1], ss_b[:-1], indexing="ij")
     gxR, gLR, gsR = np.meshgrid(xs_b[1:], Ls_b[1:], ss_b[1:], indexing="ij")
     bxL, bxR, bLL, bLR, bsL, bsR = gxL.ravel(), gxR.ravel(), gLL.ravel(), gLR.ravel(), gsL.ravel(), gsR.ravel()
@@ -776,6 +825,10 @@ def verify_super_barrier_bb(
         Vs_min = eval_logpwl(V_self_pwl, bxL)
         ev_min = eval_logpwl(EV_pwl, bsL * Y_min)
         ev_max = eval_logpwl(EV_pwl, bsR * Y_max)
+        if p_ruin > 0.0:
+            xr_ruin = bxR <= h_safe
+            ev_min = np.where(xr_ruin, omp * ev_min + pv, ev_min)
+            ev_max = np.where(xr_ruin, omp * ev_max + pv, ev_max)
         b_ev_max = np.maximum(np.where(ev_min < 0.0, bL * ev_min, bR * ev_min),
                               np.where(ev_max < 0.0, bL * ev_max, bR * ev_max))
         ub_mono = (
@@ -797,6 +850,8 @@ def verify_super_barrier_bb(
         valid_c = (ub_mono > target) & (bLR < 1.0) & (bsL > 0.0) & (bsR < 1.0) & (c_min > 1e-30)
         if ak_mode:
             valid_c = valid_c & ((bxR <= H_M) | (bxL >= H_M))
+        if p_ruin > 0.0:
+            valid_c = valid_c & ((bxR <= h_safe) | (bxL >= h_safe))
 
         ub_cent = np.full_like(ub_mono, 1e9)
         ex, eL_err, es = (bxR - bxL) / bxL, hL, hs
@@ -815,6 +870,10 @@ def verify_super_barrier_bb(
             YL_lo, YL_hi = prod_dY_dL_bounds(Av, xLv, xRv, LLv, LRv, ak_mode=ak_mode)
 
             dEV_lo, dEV_hi = deriv_bounds_logpwl(EV_pwl, smin_EV, smax_EV, y_min_v, y_max_v)
+            if p_ruin > 0.0:
+                xr_v = xRv <= h_safe
+                dEV_lo = np.where(xr_v, omp * dEV_lo, dEV_lo)
+                dEV_hi = np.where(xr_v, omp * dEV_hi, dEV_hi)
             dVs_lo, dVs_hi = deriv_bounds_logpwl(V_self_pwl, smin_self, smax_self, xLv, xRv)
 
             ev_v_min, ev_v_max = ev_min[valid_c], ev_max[valid_c]
@@ -832,6 +891,8 @@ def verify_super_barrier_bb(
             err_L_v = np.zeros(np.sum(valid_c))
             err_s_v = np.zeros(np.sum(valid_c))
             ev_m_v = eval_logpwl(EV_pwl, smv * Ymv)
+            if p_ruin > 0.0:
+                ev_m_v = np.where(xRv <= h_safe, omp * ev_m_v + pv, ev_m_v)
             Vs_m_v = eval_logpwl(V_self_pwl, xmv)
             bm_v = np.where(ev_m_v < 0.0, bL, bR)
 
@@ -891,6 +952,8 @@ def verify_super_barrier_bb(
         cm_k = (1.0 - sm) * Ym_k
         ecm_k = np.where(cm_k < 1.0, eL, eU)
         ev_k = eval_logpwl(EV_pwl, sm * Ym_k)
+        if p_ruin > 0.0:
+            ev_k = np.where(xm < h_safe, omp * ev_k + pv, ev_k)
         b_k = np.where(ev_k < 0.0, bL, bR)
         lb_k = np.where(
             (Lm < 1.0) & (sm > 0.0) & (sm < 1.0) & (cm_k > 1e-30),
@@ -967,6 +1030,7 @@ def verify_super_barrier_bb(
         all_xL, all_xR, all_LL, all_LR, all_sL, all_sR,
         float(Av), float(q_hi), float(bL), float(bR), float(eL), float(eU),
         bool(ak_mode), float(H_M),
+        float(p_ruin), float(v_ruin), float(h_safe),
     ))
     d_ub_iv = max(tail_iv_hi, boxes_iv_hi)
     iv_certified = bool(d_ub_iv <= 0.0)
@@ -1004,13 +1068,16 @@ def verify_witness_subsolution_bb(
     tol: float = 2e-4,
     max_iter: int = 35,
     interval_check: bool = True,
+    p_ruin: float = 0.0,
+    v_ruin: float = 0.0,
+    h_safe: float = H_M,
 ) -> Dict[str, object]:
     """
     Certifies via 1D adaptive B&B + 100% 50-digit Decimal Interval audit
     (zero float(iv.lo), zero 1+1e-9) that on K in [k_a, k_b]:
       1) L(K) in [0, 1 - 1e-6], kp(K) >= k_a (and <= k_b if not ak_mode)
       2) c_min(K) = q_lo*K + Y(A_lo, K, L(K)) - kp(K) > 0
-      3) W(K) - [ u_min(c_min(K), L(K)) + beta_eff * EW(kp(K)) ] <= 0
+      3) W(K) - [ u_min(c_min(K), L(K)) + beta_eff * E[W_or_ruin] ] <= 0
     """
     k_a, k_b = k_domain
     all_ks = np.unique(np.concatenate([
@@ -1023,6 +1090,11 @@ def verify_witness_subsolution_bb(
     all_ks = all_ks[(all_ks >= k_a) & (all_ks <= k_b)]
     if ak_mode and k_a < H_M < k_b:
         all_ks = np.unique(np.concatenate([all_ks, [H_M]]))
+    if p_ruin > 0.0 and k_a < h_safe < k_b:
+        all_ks = np.unique(np.concatenate([all_ks, [h_safe]]))
+
+    omp = 1.0 - p_ruin
+    pv = p_ruin * v_ruin
 
     L_grid = np.clip(eval_logpwl(L_pwl, all_ks), 0.0, 0.999)
     kp_grid = eval_logpwl(kp_pwl, all_ks)
@@ -1042,12 +1114,14 @@ def verify_witness_subsolution_bb(
     ll_g = np.log(1.0 - L_grid)
     u_g = np.minimum(eL * lc_g + (1.0 - eL) * ll_g, eU * lc_g + (1.0 - eU) * ll_g)
     ew_g = eval_logpwl(EW_pwl, kp_grid)
+    if p_ruin > 0.0:
+        ew_g = np.where(all_ks < h_safe, omp * ew_g + pv, ew_g)
     b_g = np.where(ew_g < 0.0, bR, bL)
     res_g = eval_logpwl(W_pwl, all_ks) - (u_g + b_g * ew_g)
     i_w = int(np.argmax(res_g))
     best_lb = float(res_g[i_w])
     counterexamples: List[Tuple[float, float]] = [(float(all_ks[i_w]), best_lb)]
-    target = best_lb + tol
+    target = max(best_lb + tol, -2.0e-4) if best_lb < -tol else (best_lb + tol)
 
     bxL, bxR = all_ks[:-1].copy(), all_ks[1:].copy()
     d_ub = None
@@ -1090,6 +1164,10 @@ def verify_witness_subsolution_bb(
         u_min_box = np.minimum(eL * lc_min + (1.0 - eL) * ll_min, eU * lc_min + (1.0 - eU) * ll_min)
 
         ew_lo, ew_hi = range_bounds_logpwl(EW_pwl, kp_lo, kp_hi)
+        if p_ruin > 0.0:
+            xr_ruin = bxR <= h_safe
+            ew_lo = np.where(xr_ruin, omp * ew_lo + pv, ew_lo)
+            ew_hi = np.where(xr_ruin, omp * ew_hi + pv, ew_hi)
         bew_lb = np.minimum(
             np.where(ew_lo < 0.0, bR * ew_lo, bL * ew_lo),
             np.where(ew_hi < 0.0, bR * ew_hi, bL * ew_hi),
@@ -1102,6 +1180,8 @@ def verify_witness_subsolution_bb(
         kpm = eval_logpwl(kp_pwl, xm)
         cm = q_lo * xm + prod_Y(A_lo, xm, Lm, ak_mode=ak_mode) - kpm
         ewm = eval_logpwl(EW_pwl, kpm)
+        if p_ruin > 0.0:
+            ewm = np.where(bxR <= h_safe, omp * ewm + pv, ewm)
         bm = np.where(ewm < 0.0, bR, bL)
         um = np.minimum(eL * np.log(np.maximum(cm, 1e-300)) + (1.0 - eL) * np.log(1.0 - Lm),
                         eU * np.log(np.maximum(cm, 1e-300)) + (1.0 - eU) * np.log(1.0 - Lm))
@@ -1111,6 +1191,10 @@ def verify_witness_subsolution_bb(
         dL_lo, dL_hi = deriv_bounds_logpwl(L_pwl, smin_L, smax_L, bxL, bxR)
         dkp_lo, dkp_hi = deriv_bounds_logpwl(kp_pwl, smin_kp, smax_kp, bxL, bxR)
         dEW_lo, dEW_hi = deriv_bounds_logpwl(EW_pwl, smin_EW, smax_EW, kp_lo, kp_hi)
+        if p_ruin > 0.0:
+            xr_ruin = bxR <= h_safe
+            dEW_lo = np.where(xr_ruin, omp * dEW_lo, dEW_lo)
+            dEW_hi = np.where(xr_ruin, omp * dEW_hi, dEW_hi)
         YK_lo, YK_hi = prod_dY_dK_bounds(A_lo, bxL, bxR, LL_lo_c, LL_hi_c, ak_mode=ak_mode)
         YK_lo = q_lo + YK_lo; YK_hi = q_lo + YK_hi
         YL_lo, YL_hi = prod_dY_dL_bounds(A_lo, bxL, bxR, LL_lo_c, LL_hi_c, ak_mode=ak_mode)
@@ -1135,7 +1219,7 @@ def verify_witness_subsolution_bb(
         ib = int(np.argmax(res_m))
         if res_m[ib] > best_lb:
             best_lb = float(res_m[ib])
-            target = best_lb + tol
+            target = max(best_lb + tol, -2.0e-4) if best_lb < -tol else (best_lb + tol)
             counterexamples.append((float(xm[ib]), best_lb))
 
         keep = ub > target
@@ -1175,6 +1259,10 @@ def verify_witness_subsolution_bb(
         iv_one = Interval("1")
         iv_ka = Interval(str(k_a))
         iv_kb = Interval(str(k_b))
+        iv_p_r = Interval(str(p_ruin))
+        iv_omp = iv_one - iv_p_r
+        iv_pv = iv_p_r * Interval(str(v_ruin))
+        iv_hs = Interval(str(h_safe))
         term_L = np.concatenate(done_L)
         term_R = np.concatenate(done_R)
         iv_max_res = Decimal("-1e9")
@@ -1183,6 +1271,10 @@ def verify_witness_subsolution_bb(
         def _audit_seg(kL_d: Decimal, kR_d: Decimal, depth: int = 0) -> Decimal:
             nonlocal ok_all
             k_iv = Interval._raw(kL_d, kR_d)
+            has_ruin = p_ruin > 0.0 and kR_d <= iv_hs.lo
+            if p_ruin > 0.0 and kL_d < iv_hs.hi and kR_d > iv_hs.lo:
+                mid_s = iv_hs.lo if kL_d < iv_hs.lo < kR_d else (kL_d + kR_d) / Decimal("2")
+                return max(_audit_seg(kL_d, mid_s, depth + 1), _audit_seg(mid_s, kR_d, depth + 1))
             L_iv = iv_eval_logpwl(L_pwl, k_iv)
             kp_iv = iv_eval_logpwl(kp_pwl, k_iv)
             if L_iv.lo < 0 or L_iv.hi >= 1 or kp_iv.lo < iv_ka.lo or (not ak_mode and kp_iv.hi > iv_kb.hi):
@@ -1200,7 +1292,8 @@ def verify_witness_subsolution_bb(
             u1 = iv_eL * lc_iv + (iv_one - iv_eL) * ll_iv
             u2 = iv_eU * lc_iv + (iv_one - iv_eU) * ll_iv
             u_iv = Interval._raw(min(u1.lo, u2.lo), min(u1.hi, u2.hi))
-            ew_iv = iv_eval_logpwl(EW_pwl, kp_iv)
+            ew_iv_raw = iv_eval_logpwl(EW_pwl, kp_iv)
+            ew_iv = (iv_omp * ew_iv_raw + iv_pv) if has_ruin else ew_iv_raw
             bew_lo = min(
                 (iv_bR * ew_iv).lo if ew_iv.lo < 0 else (iv_bL * ew_iv).lo,
                 (iv_bR * ew_iv).lo if ew_iv.hi < 0 else (iv_bL * ew_iv).lo,
@@ -1225,7 +1318,8 @@ def verify_witness_subsolution_bb(
             um1 = iv_eL * lcm_iv + (iv_one - iv_eL) * llm_iv
             um2 = iv_eU * lcm_iv + (iv_one - iv_eU) * llm_iv
             um_lo = min(um1.lo, um2.lo)
-            ewm_iv = iv_eval_logpwl(EW_pwl, kpm_iv)
+            ewm_iv_raw = iv_eval_logpwl(EW_pwl, kpm_iv)
+            ewm_iv = (iv_omp * ewm_iv_raw + iv_pv) if has_ruin else ewm_iv_raw
             bewm_lo = min(
                 (iv_bR * ewm_iv).lo if ewm_iv.lo < 0 else (iv_bL * ewm_iv).lo,
                 (iv_bR * ewm_iv).lo if ewm_iv.hi < 0 else (iv_bL * ewm_iv).lo,
@@ -1235,7 +1329,8 @@ def verify_witness_subsolution_bb(
             dW_iv = iv_deriv_bounds_logpwl(W_pwl, k_iv)
             dL_iv = iv_deriv_bounds_logpwl(L_pwl, k_iv)
             dkp_iv = iv_deriv_bounds_logpwl(kp_pwl, k_iv)
-            dEW_iv = iv_deriv_bounds_logpwl(EW_pwl, kp_iv)
+            dEW_iv_raw = iv_deriv_bounds_logpwl(EW_pwl, kp_iv)
+            dEW_iv = (iv_omp * dEW_iv_raw) if has_ruin else dEW_iv_raw
             YK_iv = iv_q + iv_prod_dY_dK(iv_A, k_iv, L_iv, ak_mode=ak_mode)
             YL_iv = iv_prod_dY_dL(iv_A, k_iv, L_iv, ak_mode=ak_mode)
             dc_iv = YK_iv + YL_iv * dL_iv - dkp_iv
@@ -1529,19 +1624,24 @@ def verify_adverse_exit_bb(
 # ---------------------------------------------------------------------------
 # 5. Additional 50-digit Interval Verification Helpers (Fixes 2, 4, 5, 6)
 # ---------------------------------------------------------------------------
-def verify_witness_slope_on_M(W_pwl: Dict[str, object], m_req: float) -> Tuple[bool, float]:
+def verify_witness_slope_on_M(
+    W_pwl: Dict[str, object],
+    m_req: float,
+    b_m: float = B_M,
+    h_m: float = H_M,
+) -> Tuple[bool, float]:
     """
     Fix 5: Certify in 50-digit Interval arithmetic that W'(x) >= m_req on every
-    segment overlapping M = [0.10, 0.28), validating inf_M [W(x) - B(x)] = W(0.10) - B(0.10).
+    segment overlapping [b_m, h_m), validating inf [W(x) - B(x)] = W(b_m) - B(b_m).
     """
     ks = W_pwl["ks"]
     vals = W_pwl["vals"]
     iv_m = Interval(str(m_req))
     min_d_lo = Decimal("1e30")
     for i in range(len(ks) - 1):
-        if ks[i + 1] <= B_M or ks[i] >= H_M:
+        if ks[i + 1] <= b_m or ks[i] >= h_m:
             continue
-        kR_eff = min(float(ks[i + 1]), H_M)
+        kR_eff = min(float(ks[i + 1]), h_m)
         sl_log = (Interval(float(vals[i + 1])) - Interval(float(vals[i]))) / (
             Interval(float(ks[i + 1])).ln() - Interval(float(ks[i])).ln()
         )
@@ -1874,19 +1974,32 @@ def certify_staying_deadline_interval(
     Psi_pwl: Dict[str, object],
     W_pwl: Dict[str, object],
     b_max: float = BETA_MAX,
+    b_m: float = B_M,
+    h_m: float = H_M,
+    p_ruin: float = 0.0,
 ) -> Tuple[int, float, float]:
     """
-    Bound inf_M [W - B] and sup_M [Psi - B] continuously in 50-digit Interval arithmetic
-    over M = [0.10, 0.28], returning (T_star, inf_W_B_lo, sup_Psi_B_hi).
+    Bound inf_{[b_m, h_m]} [W - B] and sup_{[b_m, h_m]} [Psi - B] continuously in 50-digit
+    Interval arithmetic, returning (T_star, inf_W_B_lo, sup_Psi_B_hi).
+    Uses effective discount b_max * (1 - p_ruin) when p_ruin > 0 (since p * V_ruin cancels).
     """
-    ks = [Decimal("0.10"), Decimal("0.28")]
+    bm_d = Decimal.from_float(float(b_m)) if float(b_m) != B_M else Decimal("0.10")
+    hm_d = Decimal.from_float(float(h_m)) if float(h_m) != H_M else Decimal("0.28")
+    # Also respect exact string Decimal if round (e.g. 0.0025)
+    bm_s = Decimal(str(b_m))
+    hm_s = Decimal(str(h_m))
+    bm_d = min(bm_d, bm_s)
+    hm_d = max(hm_d, hm_s)
+    ks = [bm_d, hm_d]
     for p in (B_pwl, Psi_pwl, W_pwl):
         for k in p["ks"]:
             kd = Decimal.from_float(float(k))
-            if Decimal("0.10") < kd < Decimal("0.28"):
+            if bm_d < kd < hm_d:
                 ks.append(kd)
-    for i in range(1, 40):
-        ks.append(Decimal("0.10") + Decimal(i) * Decimal("0.0045"))
+    for k_grid in np.geomspace(float(b_m), float(h_m), 42)[1:-1]:
+        kd = Decimal.from_float(float(k_grid))
+        if bm_d < kd < hm_d:
+            ks.append(kd)
     ks = sorted(set(ks))
 
     inf_W_B_lo = Decimal("1e30")
@@ -1901,7 +2014,9 @@ def certify_staying_deadline_interval(
 
     iv_inf = Interval._raw(inf_W_B_lo, inf_W_B_lo)
     iv_sup = Interval._raw(sup_Psi_B_hi, sup_Psi_B_hi)
-    T = certify_affine_deadline_interval(iv_inf, iv_sup, b_max)
+    iv_b_eff = Interval(str(b_max)) * (Interval("1") - Interval(str(p_ruin)))
+    b_eff_hi = float(iv_b_eff.to_float_bounds()[1])
+    T = certify_affine_deadline_interval(iv_inf, iv_sup, b_eff_hi)
     return T, float(iv_inf.to_float_bounds()[0]), float(iv_sup.to_float_bounds()[1])
 
 
@@ -2008,3 +2123,171 @@ def compute_doob_eps0_interval(
     den = dym - tail
     eps0 = num / den
     return float(eps0.to_float_bounds()[0])
+
+
+def compute_doob_eps0_coupled_pwl_interval(
+    BG_pwl: Dict[str, object],
+    BB_pwl: Dict[str, object],
+    WG_pwl: Dict[str, object],
+    WB_pwl: Dict[str, object],
+    PsiG_pwl: Dict[str, object],
+    PsiB_pwl: Dict[str, object],
+    b_max: float = BETA_MAX,
+    A_hi: float = A_MAX,
+    q_hi: float = Q_MAX,
+    b_m: float = B_M,
+    h_m: float = H_M,
+) -> Dict[str, object]:
+    """
+    Rigorous 50-digit Interval Doob uniform escape bound for coupled CEGIS-LP Markov
+    staying barriers (B_G, B_B) with constant upper extension s_hi = 0.0 on H = [h_m, oo).
+    Computes both the minimal positive horizon T0_min and the horizon T0_opt minimizing
+    the E[tau] <= T0 / eps_0 upper bound.
+    """
+    bm_d = min(Decimal(str(b_m)), Decimal.from_float(float(b_m)))
+    hm_d = max(Decimal(str(h_m)), Decimal.from_float(float(h_m)))
+    ks = [bm_d, hm_d]
+    for p in (BG_pwl, BB_pwl, WG_pwl, WB_pwl, PsiG_pwl, PsiB_pwl):
+        for k in p["ks"]:
+            kd = Decimal.from_float(float(k))
+            if bm_d < kd < hm_d:
+                ks.append(kd)
+    for k_grid in np.geomspace(float(b_m), float(h_m), 42)[1:-1]:
+        kd = Decimal.from_float(float(k_grid))
+        if bm_d < kd < hm_d:
+            ks.append(kd)
+    ks = sorted(set(ks))
+
+    m_inf_lo = Decimal("1e30")
+    d_stay_hi = Decimal("-1e30")
+    for kL_d, kR_d in zip(ks[:-1], ks[1:]):
+        k_iv = Interval._raw(kL_d, kR_d)
+        bG = iv_eval_logpwl(BG_pwl, k_iv)
+        bB = iv_eval_logpwl(BB_pwl, k_iv)
+        wG = iv_eval_logpwl(WG_pwl, k_iv)
+        wB = iv_eval_logpwl(WB_pwl, k_iv)
+        pG = iv_eval_logpwl(PsiG_pwl, k_iv)
+        pB = iv_eval_logpwl(PsiB_pwl, k_iv)
+        m_inf_lo = min(m_inf_lo, (wG - bG).lo, (wB - bB).lo)
+        d_stay_hi = max(d_stay_hi, (pG - bG).hi, (pB - bB).hi)
+
+    assert m_inf_lo > Decimal("0"), f"Coupled Markov staying margin <= 0: {m_inf_lo}"
+
+    iv_Ah = Interval(str(A_hi))
+    iv_qh = Interval(str(q_hi))
+    iv_h = Interval(str(h_m))
+    iv_bH = Interval(str(b_max))
+    iv_one = Interval("1")
+    iv_ymax = iv_qh * iv_h + iv_F_A(iv_Ah, iv_h, iv_one)
+
+    bGh = iv_eval_logpwl(BG_pwl, iv_h)
+    bBh = iv_eval_logpwl(BB_pwl, iv_h)
+    psiGy = iv_eval_logpwl(PsiG_pwl, iv_ymax)
+    psiBy = iv_eval_logpwl(PsiB_pwl, iv_ymax)
+    d_exit_G = psiGy - bGh
+    d_exit_B = psiBy - bBh
+    iv_D_exit = Interval._raw(
+        max(d_exit_G.lo, d_exit_B.lo),
+        max(d_exit_G.hi, d_exit_B.hi),
+    )
+    assert iv_D_exit.lo > Decimal("0"), f"Exit overshoot must be positive: {iv_D_exit}"
+
+    iv_m_inf = Interval._raw(m_inf_lo, m_inf_lo)
+    iv_D_stay = Interval._raw(d_stay_hi, d_stay_hi)
+    # Since K_0 in M, tau >= 1 on {tau <= T0} => beta^tau <= beta_+.
+    iv_exit_term = iv_bH * iv_D_exit
+
+    T0_min = None
+    eps0_at_min = None
+    best_E_tau_hi = Decimal("1e30")
+    T0_opt = None
+    eps0_at_opt = None
+
+    for T in range(1, 401):
+        tail = iv_bH.pow_int(T) * iv_D_stay
+        if tail.hi >= iv_m_inf.lo:
+            continue
+        den = iv_exit_term - tail
+        if den.lo <= Decimal("0"):
+            continue
+        eps0 = (iv_m_inf - tail) / den
+        if eps0.lo <= Decimal("0"):
+            continue
+        if T0_min is None:
+            T0_min = T
+            eps0_at_min = float(eps0.to_float_bounds()[0])
+        E_tau = Interval(str(T)) / eps0
+        if E_tau.hi < best_E_tau_hi:
+            best_E_tau_hi = E_tau.hi
+            T0_opt = T
+            eps0_at_opt = float(eps0.to_float_bounds()[0])
+        if T0_min is not None and T >= T0_min + 120:
+            break
+
+    assert T0_min is not None and T0_opt is not None, "Coupled Doob gap failed to turn positive in 400 steps"
+    iv_E_min = Interval(str(T0_min)) / Interval._raw(
+        Decimal.from_float(eps0_at_min), Decimal.from_float(eps0_at_min)
+    )
+    return {
+        "T0_min": int(T0_min),
+        "eps0_min": float(eps0_at_min),
+        "E_tau_at_min": float(iv_E_min.to_float_bounds()[1]),
+        "T0_opt": int(T0_opt),
+        "eps0_opt": float(eps0_at_opt),
+        "E_tau_opt": float(Interval._raw(best_E_tau_hi, best_E_tau_hi).to_float_bounds()[1]),
+        "m_inf_lo": float(Interval._raw(m_inf_lo, m_inf_lo).to_float_bounds()[0]),
+        "D_stay_hi": float(Interval._raw(d_stay_hi, d_stay_hi).to_float_bounds()[1]),
+        "D_exit_hi": float(iv_D_exit.to_float_bounds()[1]),
+    }
+
+
+def certify_nonstationary_deadline_interval(
+    Psi_pwl: Dict[str, object],
+    W_pwl: Dict[str, object],
+    J_list: List[Dict[str, object]],
+    b_m: float = B_M,
+    h_m: float = H_M,
+) -> Tuple[bool, float, float]:
+    """
+    Verify non-stationary finite-horizon Bellman barriers J_0, ..., J_K on [b_m, h_m]:
+      (i) J_0(x) >= Psi(x) for all x in [b_m, h_m], and
+      (ii) W(x) > J_K(x) for all x in [b_m, h_m].
+    Combined with Bellman staying inequalities J_k >= T_stay[J_{k-1}] on [b_m, h_m],
+    every optimal path staying in M for K steps satisfies J(pi) <= J_K < W <= V,
+    certifying exit to H in <= K periods.
+    """
+    assert len(J_list) >= 2
+    bm_d = min(Decimal(str(b_m)), Decimal.from_float(float(b_m)))
+    hm_d = max(Decimal(str(h_m)), Decimal.from_float(float(h_m)))
+    ks = [bm_d, hm_d]
+    for p in (Psi_pwl, W_pwl, J_list[0], J_list[-1]):
+        for k in p["ks"]:
+            kd = Decimal.from_float(float(k))
+            if bm_d < kd < hm_d:
+                ks.append(kd)
+    for k_grid in np.geomspace(float(b_m), float(h_m), 42)[1:-1]:
+        kd = Decimal.from_float(float(k_grid))
+        if bm_d < kd < hm_d:
+            ks.append(kd)
+    ks = sorted(set(ks))
+
+    min_j0_psi = Decimal("1e30")
+    min_w_jk = Decimal("1e30")
+    J0, JK = J_list[0], J_list[-1]
+    # Because J0, Psi, W, and JK are exact continuous log-PWL functions, J0 - Psi and W - JK
+    # are affine in log(K) between consecutive union knots and attain their exact extrema at knots.
+    for kd in ks:
+        k_iv = Interval._raw(kd, kd)
+        j0_iv = iv_eval_logpwl(J0, k_iv)
+        psi_iv = iv_eval_logpwl(Psi_pwl, k_iv)
+        w_iv = iv_eval_logpwl(W_pwl, k_iv)
+        jk_iv = iv_eval_logpwl(JK, k_iv)
+        min_j0_psi = min(min_j0_psi, (j0_iv - psi_iv).lo)
+        min_w_jk = min(min_w_jk, (w_iv - jk_iv).lo)
+
+    ok = (min_j0_psi >= Decimal("0")) and (min_w_jk > Decimal("0"))
+    return (
+        bool(ok),
+        float(Interval._raw(min_j0_psi, min_j0_psi).to_float_bounds()[0]),
+        float(Interval._raw(min_w_jk, min_w_jk).to_float_bounds()[0]),
+    )
