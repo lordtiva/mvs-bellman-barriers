@@ -5,7 +5,7 @@
 
 Código, certificados formales **CEGIS-LP deterministas** auditados por aritmética de intervalos sin `libm`, figuras y manuscrito en Typst construidos como extensión independiente, auditable y autocontenida sobre *Minimum Viable Scale* de Milei y Reidel (octubre de 2026).
 
-- **Archivo permanente en Zenodo (`v1.0.0`):** DOI [`10.5281/zenodo.24464159`](https://doi.org/10.5281/zenodo.24464159) ([registro](https://zenodo.org/records/24464159)) — Concept DOI (todas las versiones): [`10.5281/zenodo.24464158`](https://doi.org/10.5281/zenodo.24464158).
+- **Archivo permanente en Zenodo (`v1.0.1`):** DOI [`10.5281/zenodo.24467170`](https://doi.org/10.5281/zenodo.24467170) ([registro](https://zenodo.org/records/24467170)) — Concept DOI (todas las versiones): [`10.5281/zenodo.24464158`](https://doi.org/10.5281/zenodo.24464158).
 
 ---
 
@@ -95,9 +95,9 @@ python -u cegis_synth.py --all --seed 42
   title        = {Barreras de Bellman Afiladas, Equivalencia Asintótica y Supervivencia Estocástica Certificada bajo Rendimientos Crecientes},
   year         = 2026,
   publisher    = {Zenodo},
-  version      = {v1.0.0},
-  doi          = {10.5281/zenodo.24464159},
-  url          = {https://doi.org/10.5281/zenodo.24464159}
+  version      = {v1.0.1},
+  doi          = {10.5281/zenodo.24467170},
+  url          = {https://doi.org/10.5281/zenodo.24467170}
 }
 ```
 
