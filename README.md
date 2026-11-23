@@ -1,6 +1,11 @@
 # Barreras de Bellman Afiladas, Equivalencia Asintótica y Supervivencia Estocástica Certificada bajo Rendimientos Crecientes
 
+[![DOI](https://zenodo.org/badge/1467613115.svg)](https://doi.org/10.5281/zenodo.24464158)
+[![Verify CEGIS Certificates](https://github.com/lordtiva/mvs-bellman-barriers/actions/workflows/verify.yml/badge.svg)](https://github.com/lordtiva/mvs-bellman-barriers/actions/workflows/verify.yml)
+
 Código, certificados formales **CEGIS-LP deterministas** auditados por aritmética de intervalos sin `libm`, figuras y manuscrito en Typst construidos como extensión independiente, auditable y autocontenida sobre *Minimum Viable Scale* de Milei y Reidel (octubre de 2026).
+
+- **Archivo permanente en Zenodo (`v1.0.0`):** DOI [`10.5281/zenodo.24464159`](https://doi.org/10.5281/zenodo.24464159) ([registro](https://zenodo.org/records/24464159)) — Concept DOI (todas las versiones): [`10.5281/zenodo.24464158`](https://doi.org/10.5281/zenodo.24464158).
 
 ---
 
@@ -82,6 +87,19 @@ python -u cegis_synth.py --all --seed 42
 ```
 
 ---
+
+## Cita sugerida (Zenodo)
+```bibtex
+@software{segura_2026_mvs_bellman_barriers,
+  author       = {Segura, Marcelo},
+  title        = {Barreras de Bellman Afiladas, Equivalencia Asintótica y Supervivencia Estocástica Certificada bajo Rendimientos Crecientes},
+  year         = 2026,
+  publisher    = {Zenodo},
+  version      = {v1.0.0},
+  doi          = {10.5281/zenodo.24464159},
+  url          = {https://doi.org/10.5281/zenodo.24464159}
+}
+```
 
 ## Licencia
 Distribuido bajo licencia MIT ([LICENSE](LICENSE)).
