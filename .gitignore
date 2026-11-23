@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .case3_outer_cache.json
+cegis_certificates.json
 rust_verifier/target/
 *.dll
 *.so

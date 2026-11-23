@@ -138,7 +138,8 @@ class BbOut(ctypes.Structure):
 def load_dll(pure: bool = False):
     if pure: return None
     if 0 not in _LIB_C:
-        lib = ctypes.CDLL(os.path.join(os.path.dirname(os.path.abspath(__file__)), "rust_verifier", "mvs_verifier.dll"))
+        ext = "mvs_verifier.dll" if os.name == "nt" else ("libmvs_verifier.dylib" if os.uname().sysname == "Darwin" else "libmvs_verifier.so")
+        lib = ctypes.CDLL(os.path.join(os.path.dirname(os.path.abspath(__file__)), "rust_verifier", ext))
         P, D, Z, I = ctypes.POINTER(ctypes.c_double), ctypes.c_double, ctypes.c_size_t, ctypes.c_int
         for fn, args in [("rs_verify_staying_barrier_bb_ext", [P, P, P, P, Z, D, D, P, P, P, P, Z, D, D, D, D, D, D, D, D, D, D, D, D, D, Z, P, Z]),
                          ("rs_verify_super_barrier_bb_ext", [P, P, P, P, Z, D, D, P, P, P, P, Z, D, D, D, D, D, D, D, D, D, D, D, D, D, I, Z, Z, P, Z]),

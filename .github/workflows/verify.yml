@@ -1,0 +1,69 @@
+name: Independent CEGIS Certificate Verification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  verify-fast-cases:
+    name: Build Rust Verifier & Audit Cases 1, 2, 4, 5, 6
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check Rust toolchain
+        run: rustc --version
+
+      - name: Build zero-dependency Rust verifier (libmvs_verifier.so)
+        run: python rust_verifier/build.py
+
+      - name: Verify standalone auditor constraints (0 non-stdlib imports, < 350 lines)
+        run: |
+          python -c "
+          import ast, sys
+          src = open('audit_standalone.py', encoding='utf-8').read()
+          lines = src.splitlines()
+          tree = ast.parse(src)
+          mods = {a.name.split('.')[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names} | {n.module.split('.')[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
+          non_std = sorted(m for m in mods if m not in sys.stdlib_module_names)
+          print(f'lines={len(lines)}, non_std={non_std}')
+          assert len(lines) < 350 and non_std == []
+          "
+
+      - name: Compute SHA-256 artifact checksums
+        run: sha256sum audit_standalone.py cegis_certificates.json.xz rust_verifier/src/lib.rs rust_verifier/libmvs_verifier.so
+
+      - name: Audit Cases 1, 2, 4, 5, 6 (MR Lemma 11 ln() + Rust B&B + 50-digit Decimal)
+        run: |
+          for c in 1 2 4 5 6; do
+            python -u audit_standalone.py cegis_certificates.json.xz --case "$c"
+          done
+
+  verify-case3-markov:
+    name: Build Rust Verifier & Audit Case 3 (Markov 64 bands + 1054 H1_B leaves)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build zero-dependency Rust verifier (libmvs_verifier.so)
+        run: python rust_verifier/build.py
+
+      - name: Audit Case 3 (all 64 outer bands, coupled Doob, and 1,054 H1_B leaves)
+        run: python -u audit_standalone.py cegis_certificates.json.xz --case 3

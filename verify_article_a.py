@@ -1320,7 +1320,7 @@ def verify_section5_stochastic_vfi():
 
     V_ss_est = eta * np.log(F_A(A_G, K_ss, 0.7) - delta * K_ss)
 
-    def solve_cont_markov_vfi(p_val: float, r_rec_val: float):
+    def solve_cont_markov_vfi(p_val: float, r_rec_val: float, return_etau: bool = False):
         Vc0 = (eta / (1.0 - beta)) * (np.log((1.0 - beta) * q) + (beta / (1.0 - beta)) * np.log(beta * q))
         VG = np.where(k_grid > 0.00145, V_ss_est / (1.0 - beta), Vc0 + (eta / (1.0 - beta)) * np.log(k_grid))
         VB = VG.copy() - 5.0
@@ -1390,7 +1390,29 @@ def verify_section5_stochastic_vfi():
         idx_kb = np.where((k_grid >= 0.005) & (k_grid <= 0.03))[0]
         j_kb = idx_kb[np.where((polB - k_grid)[idx_kb] > 0)[0][0]]
         KB_star = float(0.5 * (k_grid[j_kb - 1] + k_grid[j_kb]))
-        return S_G, S_Bkink, KB_star, kp_m, L_m
+        if not return_etau:
+            return S_G, S_Bkink, KB_star, kp_m, L_m
+        mask_sub = (k_grid >= 0.02) & (k_grid < H_M)
+        mask_M_tau = (k_grid >= B_M - 1e-12) & (k_grid < H_M)
+        k_sub_tau = k_grid[mask_sub]
+        eG = np.zeros_like(k_grid)
+        eB = np.zeros_like(k_grid)
+        for _ in range(500):
+            ev_eG = ((1.0 - p_val) * eG + p_val * eB)[mask_sub]
+            ev_eB = (r_rec_val * eG + (1.0 - r_rec_val) * eB)[mask_sub]
+            cont_G = np.where(polG[mask_sub] < H_M, np.interp(polG[mask_sub], k_sub_tau, ev_eG), 0.0)
+            cont_B = np.where(polB[mask_sub] < H_M, np.interp(polB[mask_sub], k_sub_tau, ev_eB), 0.0)
+            eG_new = np.zeros_like(k_grid)
+            eB_new = np.zeros_like(k_grid)
+            eG_new[mask_sub] = 1.0 + cont_G
+            eB_new[mask_sub] = 1.0 + cont_B
+            if max(np.max(np.abs(eG_new - eG)), np.max(np.abs(eB_new - eB))) < 1e-10:
+                eG, eB = eG_new, eB_new
+                break
+            eG, eB = eG_new, eB_new
+        etau_max = float(max(np.max(eG[mask_M_tau]), np.max(eB[mask_M_tau])))
+        etau_b = (float(np.interp(B_M, k_sub_tau, eG[mask_sub])), float(np.interp(B_M, k_sub_tau, eB[mask_sub])))
+        return S_G, S_Bkink, KB_star, kp_m, L_m, etau_max, etau_b
 
     p_tests = [0.0, 0.005, 0.010, 0.015, 0.020, 0.050, 0.080]
     ruin_S, ruin_kp, ruin_L = [], [], []
@@ -1478,6 +1500,13 @@ def verify_section5_stochastic_vfi():
         rec_sens.append((r_val, sg_r, sbk_r, kbs_r, kpm_r, lm_r))
         print(f"    r_rec={r_val:.4f}: S_G={sg_r:.6f}, S_B_kink={sbk_r:.5f}, K_B*={kbs_r:.5f}, K'_G(0.10)={kpm_r:.5f}, L_G={lm_r:.4f}")
         pbar_vfi.update(1, suffix=f"r_rec={r_val:.2f}")
+
+    print("\n  [Case 3 VFI E[tau]] Exact Markov VFI expected escape time on M=[0.10, 0.28) (p_rec=1/3):")
+    case3_etau_vfi = {}
+    for p_c3 in [0.0, 0.005, 0.010, 0.015, 0.020, 0.050, 0.080, 0.120]:
+        _, _, _, _, _, etau_m, etau_b = solve_cont_markov_vfi(p_c3, r_rec, return_etau=True)
+        case3_etau_vfi[p_c3] = (etau_m, etau_b)
+        print(f"    p={100*p_c3:4.1f}%: max_M E_VFI[tau]={etau_m:.2f}, E_VFI[tau|0.10,G]={etau_b[0]:.2f}, E_VFI[tau|0.10,B]={etau_b[1]:.2f}")
 
     # Case 5: State-dependent Endogenous Ruin p(K) = p * 1_{K < 0.28} with V_ruin = -60
     print("\n  [Case 5 VFI] Endogenous Ruin p(K) = p * 1_{K < 0.28} (V_ruin = -60):")

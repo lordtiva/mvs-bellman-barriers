@@ -144,7 +144,7 @@ def make_fig1(certs: dict) -> None:
 
     ax2.annotate(r"MR ($\tau_H \leq 46$)", xy=(46, prefix_paper[T_even == 46][0]), xytext=(34.5, -40.8),
                  arrowprops=dict(arrowstyle="->", color="#d95f02", lw=0.9), fontsize=8.0, color="#d95f02", fontweight="bold")
-    ax2.annotate(r"Teo. 9* ($\tau_H \leq 23$)", xy=(23, prefix_state[22]), xytext=(26.0, -32.2),
+    ax2.annotate(r"Teo. 1 ($\tau_H \leq 23$)", xy=(23, prefix_state[22]), xytext=(26.0, -32.2),
                  arrowprops=dict(arrowstyle="->", color="#1f4e78", lw=0.9), fontsize=8.0, color="#1f4e78", fontweight="bold")
     ax2.annotate(rf"CEGIS $T_\theta \leq {T_base}$" + "\n" + rf"($T_{{\mathrm{{full}}}} \leq {T_full}$, no estac. $\mathcal{{P}}: 5$)", xy=(T_base, prefix_cegis_base[T_base - 1]), xytext=(12.2, -45.5),
                  arrowprops=dict(arrowstyle="->", color="#7b3294", lw=0.9), fontsize=7.8, color="#7b3294", fontweight="bold")
@@ -205,7 +205,7 @@ def make_fig2(sec4_rows: list) -> None:
     ax1_ins = inset_axes(ax1, width="43%", height="34%", loc="lower left", bbox_to_anchor=(0.09, 0.08, 1.0, 1.0), bbox_transform=ax1.transAxes)
     ax1_ins.semilogx(A_wk, np.array(wk_endo) * 1e4, "o-", color="#7b3294", ms=3.5, lw=1.5, label=r"$A^2 S_A$ ($\beta=0.90$)")
     ax1_ins.semilogx(A_wk, np.array(wk_fix) * 1e4, "s--", color="#c00000", ms=3.3, lw=1.4, label=r"$A^2 S_A^{\mathrm{fix}}$")
-    ax1_ins.set_title(r"Corolario 2* ($\beta=0.90, \beta\theta=1.35$)", fontsize=7.2, pad=2)
+    ax1_ins.set_title(r"Corolario 1 ($\beta=0.90, \beta\theta=1.35$)", fontsize=7.2, pad=2)
     ax1_ins.tick_params(labelsize=6.8)
     ax1_ins.grid(True, ls=":", alpha=0.3)
     ax1_ins.legend(loc="upper right", fontsize=6.2, frameon=True)
@@ -315,7 +315,7 @@ def make_fig3(certs: dict, vfi5: dict) -> None:
     ax1.legend(lines_all, labels_all, loc="upper left", fontsize=6.4, frameon=True, facecolor="white", framealpha=0.96)
 
     # Panel (b)
-    ax2.plot(p_dense * 100.0, P_23 * 100.0, "--", color="#1b7837", lw=1.8, label=r"Teo. 9* sin anticipación $(1-p)^{23}$ ($p=0$ fijo)")
+    ax2.plot(p_dense * 100.0, P_23 * 100.0, "--", color="#1b7837", lw=1.8, label=r"Teo. 1 sin anticipación $(1-p)^{23}$ ($p=0$ fijo)")
     ax2.plot(p_dense * 100.0, P_46 * 100.0, "-.", color="#d95f02", lw=1.7, label=r"Bloques MR sin anticipación $(1-p)^{46}$")
     ax2.plot(p_plot * 100.0, P_doob_B1 * 100.0, "-", color="#1f4e78", lw=2.3, label=rf"Caso 2 continuo $B_1$ (60 bandas $\tilde{{\beta}}_p$): $T^*_{{2\%}}={T2_B1}$")
     if len(p_ceg) > 1:

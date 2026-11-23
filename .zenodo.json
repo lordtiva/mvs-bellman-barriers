@@ -1,0 +1,20 @@
+{
+  "title": "Barreras de Bellman Afiladas, Equivalencia Asintótica y Supervivencia Estocástica Certificada bajo Rendimientos Crecientes",
+  "description": "Extensiones analíticas, síntesis adaptativa determinista CEGIS-LP (HiGHS) y certificados de intervalos libres de libm (Lema 11 de Milei y Reidel en Rust y Decimal de 50 dígitos), con auditoría autónoma sin dependencias externas (audit_standalone.py) sobre Minimum Viable Scale (Milei y Reidel, 2026).",
+  "creators": [
+    {
+      "name": "Segura, Marcelo"
+    }
+  ],
+  "upload_type": "software",
+  "license": "MIT",
+  "keywords": [
+    "Non-convex dynamic programming",
+    "Skiba points",
+    "Bellman barriers",
+    "CEGIS-LP",
+    "Interval arithmetic",
+    "Doob optional stopping",
+    "CES asymptotic equivalence"
+  ]
+}
