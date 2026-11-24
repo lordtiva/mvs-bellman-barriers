@@ -80,7 +80,7 @@ jobs:
       - name: Install elan & build MVS Lean 4 project
         uses: leanprover/lean-action@v1
         with:
-          lean-project-directory: lean
+          lake-package-directory: lean
           use-mathlib-cache: true
 
       - name: Audit axioms & verify zero sorry across MVS
