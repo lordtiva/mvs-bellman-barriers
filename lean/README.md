@@ -52,7 +52,7 @@ import MVS
 #print axioms MVS.Proposition1.prop1_uniform_10
 #print axioms MVS.Proposition2Cert.prop2_M_positive
 #print axioms MVS.Proposition2Cert.prop2_H1_positive
-#print axioms MVS.Theorem2.theorem2_part2_assembled
+#print axioms MVS.Theorem2.CESParams.theorem2_part2_assembled
 #print axioms MVS.Theorem2.CESParams.piece2_delta_k_upper
 #print axioms MVS.Theorem2.CESParams.piece3_delta_k_lower
 #print axioms MVS.Theorem2.CESParams.part2_free_relative_gap_bound
