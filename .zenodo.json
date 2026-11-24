@@ -1,6 +1,6 @@
 {
   "title": "Barreras de Bellman Afiladas, Equivalencia Asintótica y Supervivencia Estocástica Certificada bajo Rendimientos Crecientes",
-  "description": "Extensiones analíticas, síntesis adaptativa determinista CEGIS-LP (HiGHS) y certificados de intervalos libres de libm (Lema 11 de Milei y Reidel en Rust y Decimal de 50 dígitos), con auditoría autónoma sin dependencias externas (audit_standalone.py) sobre Minimum Viable Scale (Milei y Reidel, 2026).",
+  "description": "Extensiones analíticas, síntesis adaptativa determinista CEGIS-LP (HiGHS), certificados de intervalos libres de libm (Lema 11 de Milei y Reidel en Rust y Decimal de 50 dígitos), formalización completa en Lean 4 (13 módulos, 0 sorry, 0 axiomas adicionales) y auditoría autónoma sin dependencias externas (audit_standalone.py) sobre Minimum Viable Scale (Milei y Reidel, 2026).",
   "creators": [
     {
       "name": "Segura, Marcelo"
@@ -15,6 +15,7 @@
     "CEGIS-LP",
     "Interval arithmetic",
     "Doob optional stopping",
-    "CES asymptotic equivalence"
+    "CES asymptotic equivalence",
+    "Lean 4"
   ]
 }

@@ -1,21 +1,21 @@
 """
-Reproducible analytical interval & VFI verification script for Article A:
+Reproducible analytical interval & VFI verification script:
   "Barreras de Bellman Afiladas, Equivalencia Asintotica y Supervivencia
    Estocastica Certificada bajo Rendimientos Crecientes" (Marcelo Segura, 2026)
 
 Verifies:
-  1. Section 3: Lemma 1, Theorem 9*, Proposition 1* (with c < 1 - L = 0.25 check),
+  1. Section 3: Lemma 1, Theorem 1, Proposition 1 (with c < 1 - L = 0.25 check),
      sharpened M0 witness (tau_.1 <= 9 with CEGIS super-barrier), restricted-M slack
-     decomposition (46 -> 23 -> 9 -> 4), and Proposition 1** & Table 2 (outward-rounded
+     decomposition (46 -> 23 -> 9 -> 4), and Proposition 2 & Table 2 (outward-rounded
      50-digit Decimal interval arithmetic & Wronskian monotonicity).
-  2. Section 4: Theorem 3*, Corollary 2* & Table 3 (exact FOC scaling + log-k interpolated
+  2. Section 4: Theorem 2, Corollary 1 & Table 3 (exact FOC scaling + log-k interpolated
      continuous-state VFI up to A = 10^8 verifying 0 < dW_pi_plus <= dW_plus -> 0+,
      L_ss = 7/9, and O(A^-1) harmonic decay of dW_minus).
-  3. Section 5: Stochastic VFI (Table 5 + p_rec sensitivity) & independent interval
-     re-audit of cegis_certificates.json.
+  3. Section 5-6: Stochastic VFI (Table 6 + p_rec sensitivity) & independent interval
+     re-audit of cegis_certificates.json.xz.
 
 Usage:
-  python verify_article_a.py
+  python verify_all.py
 """
 
 from __future__ import annotations
@@ -1513,6 +1513,7 @@ def verify_section5_stochastic_vfi():
     V_ruin_c5 = -60.0
     endo_ruin_p = [0.0, 0.01, 0.02, 0.05, 0.08]
     endo_ruin_S, endo_ruin_kp, endo_ruin_L, endo_ruin_V10, endo_ruin_V28 = [], [], [], [], []
+    endo_ruin_pols = {}
     mask_M_c5 = k_grid < H_M
     for p_er in endo_ruin_p:
         b_eff_er = beta * (1.0 - p_er)
@@ -1577,6 +1578,7 @@ def verify_section5_stochastic_vfi():
             tau_er += 1
         endo_ruin_S.append(kS_er); endo_ruin_kp.append(kp_er); endo_ruin_L.append(L_er)
         endo_ruin_V10.append(v10_er); endo_ruin_V28.append(v28_er)
+        endo_ruin_pols[p_er] = pol.copy()
         print(f"    p={100*p_er:4.1f}%: S_endo={kS_er:.6f}, K'(0.10)={kp_er:.5f}, L(0.10)={L_er:.4f}, V(0.10)={v10_er:.4f}, V(0.28)={v28_er:.4f}, tau_VFI={tau_er}")
     assert endo_ruin_kp[-1] > endo_ruin_kp[0] and endo_ruin_L[-1] > endo_ruin_L[0], (
         f"Expected endogenous flight to safety: kp={endo_ruin_kp}, L={endo_ruin_L}"
@@ -1599,6 +1601,9 @@ def verify_section5_stochastic_vfi():
         "endo_ruin_L": endo_ruin_L,
         "endo_ruin_V10": endo_ruin_V10,
         "endo_ruin_V28": endo_ruin_V28,
+        "case3_etau_vfi": case3_etau_vfi,
+        "k_grid": k_grid,
+        "endo_ruin_pols": endo_ruin_pols,
     }
 
 
@@ -1906,7 +1911,7 @@ if __name__ == "__main__":
         assert has_all, f"All 4 cases required in {c_path} for --audit-only"
         audit_cegis_certificates(c_path, full_audit=args.full_audit)
     else:
-        pbar_main = ProgressBar("verify_article_a | Suite", 6 if has_all else 5, min_interval_sec=0.0)
+        pbar_main = ProgressBar("verify_all | Suite", 6 if has_all else 5, min_interval_sec=0.0)
         verify_section3_barriers(cdata); pbar_main.update(1, suffix="Sec. 3 barreras", force=True)
         verify_restricted_M_vfi(); pbar_main.update(1, suffix="Sec. 3 M restr.", force=True)
         verify_prop1_double_star(); pbar_main.update(1, suffix="Prop. 1** + Tabla 2", force=True)
