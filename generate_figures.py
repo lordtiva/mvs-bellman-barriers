@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import lzma
+import math
 import os
 import sys
 import numpy as np
@@ -318,19 +319,21 @@ def make_fig3(certs: dict, vfi5: dict) -> None:
         ax2.plot(p_ceg * 100.0, P_ceg * 100.0, "*", color="#7b3294", ms=12.0, zorder=7,
                  label=rf"Caso 2 CEGIS-LP $B_\theta$ ($p=2\%$): $T^*_{{2\%}}={T2_ceg}$")
 
+    p2_ceg_lb = math.floor(p2_ceg_pct * 100.0) / 100.0
+    p2_b1_lb = math.floor(p2_b1_pct * 100.0) / 100.0
     ax2.scatter([2.0, 2.0], [p2_ceg_pct, p2_b1_pct], color=["#7b3294", "#1f4e78"], zorder=8, s=50)
     ax2.annotate(
-        rf"$p=2\%$: CEGIS $T^*={T2_ceg}$ ({p2_ceg_pct:.1f}%)",
-        xy=(2.0, p2_ceg_pct), xytext=(1.05, 81.0),
+        rf"$p=2\%$: CEGIS $T^*={T2_ceg}$ ($\geq {p2_ceg_lb:.2f}\%$)",
+        xy=(2.0, p2_ceg_pct), xytext=(0.98, 81.0),
         arrowprops=dict(arrowstyle="->", color="#7b3294", lw=1.1),
-        fontsize=9.4, color="#7b3294", fontweight="bold",
+        fontsize=9.3, color="#7b3294", fontweight="bold",
         bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="#7b3294", lw=0.8, alpha=0.95),
     )
     ax2.annotate(
-        rf"$p=2\%$: $B_1$ banda $\tilde{{\beta}}_p$, $T^*={T2_B1}$ ({p2_b1_pct:.1f}%)",
-        xy=(2.0, p2_b1_pct), xytext=(1.05, 56.0),
+        rf"$p=2\%$: $B_1$ banda $\tilde{{\beta}}_p$, $T^*={T2_B1}$ ($\geq {p2_b1_lb:.2f}\%$)",
+        xy=(2.0, p2_b1_pct), xytext=(0.96, 56.0),
         arrowprops=dict(arrowstyle="->", color="#1f4e78", lw=1.1),
-        fontsize=9.4, color="#1f4e78", fontweight="bold",
+        fontsize=9.3, color="#1f4e78", fontweight="bold",
         bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="#1f4e78", lw=0.8, alpha=0.95),
     )
 
@@ -393,8 +396,8 @@ def make_fig_arch() -> None:
     draw_box(9.35, 2.65, 1.80, 1.38, "Auditoría sin libm",
              "Rust + Decimal 50 díg.\naudit_standalone.py", "#ecfdf5", "#1b7837", "#14532d")
 
-    draw_box(4.20, 0.44, 6.40, 1.08, "Formalización Mecanizada en Lean 4 (v4.36.0 + Mathlib4)",
-             "13 módulos · 0 sorry · 0 axiomas adicionales · Teoremas 1–3, Lema 11/12, Prop. 1–9", "#fefce8", "#b45309", "#78350f")
+    draw_box(3.85, 0.42, 7.10, 1.14, "Formalización Mecanizada en Lean 4 (v4.36.0 + Mathlib4)",
+             "13 módulos · 0 sorry · 0 axiomas adicionales\nLemas 1–2, Teoremas 1–3, Prop. 1–9 · Lemas 11–12 de MR (2026)", "#fefce8", "#b45309", "#78350f")
 
     draw_arrow(2.95, 3.34, 3.75, 3.34, col="#1f4e78")
     draw_arrow(6.50, 3.34, 7.10, 3.34, col="#1f4e78")
@@ -407,7 +410,7 @@ def make_fig_arch() -> None:
             bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="#fecaca", lw=0.8), zorder=6)
 
     # Lean 4 arrow into Audit / Guarantee
-    draw_arrow(10.25, 1.52, 10.25, 2.65, col="#b45309", lw=1.5, ls="--")
+    draw_arrow(10.25, 1.56, 10.25, 2.65, col="#b45309", lw=1.5, ls="--")
 
     _save_fig("fig_arch_es")
 
