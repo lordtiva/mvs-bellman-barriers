@@ -232,11 +232,15 @@ def make_fig2(sec4_rows: list) -> None:
     ax2.legend(loc="lower left", fontsize=8.8, frameon=True, facecolor="white", framealpha=0.96)
     ax2.grid(True, which="both", ls=":", alpha=0.35)
 
-    ax2_ins = inset_axes(ax2, width="33%", height="32%", loc="center right", bbox_to_anchor=(-0.03, -0.02, 1.0, 1.0), bbox_transform=ax2.transAxes)
+    ax2_ins = inset_axes(ax2, width="33%", height="32%", loc="center right", bbox_to_anchor=(-0.03, -0.07, 1.0, 1.0), bbox_transform=ax2.transAxes)
     ax2_ins.semilogx(A_arr, L_ss, "o-", color="#1b7837", ms=4.0, lw=1.7)
     ax2_ins.axhline(L_ss_exact, color="#111111", ls="--", lw=1.2)
-    ax2_ins.set_ylim(0.7765, 0.7830)
-    ax2_ins.set_title(r"$L_{\mathrm{ss}} \to \frac{7}{9} \approx 0.7778$", fontsize=8.8, pad=4)
+    ax2_ins.set_ylim(0.7765, 0.7845)
+    ax2_ins.text(
+        0.55, 0.90, r"$L_{\mathrm{ss}} \to \frac{7}{9} \approx 0.7778$",
+        transform=ax2_ins.transAxes, ha="center", va="top", fontsize=8.4,
+        bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="none", alpha=0.92),
+    )
     ax2_ins.tick_params(labelsize=8.0)
     ax2_ins.grid(True, ls=":", alpha=0.3)
 
@@ -502,7 +506,7 @@ def make_fig_markov(certs: dict, vfi5: dict) -> None:
 
     # Panel (a): E[tau] compression
     ax1.semilogy(p_pct, etau_aff, "o--", color="#d95f02", lw=2.2, ms=6.0, label=r"Barrera afín analítica ($\mathbb{E}[\tau] \leq 1\,480\text{ a }13\,323$)")
-    ax1.semilogy(p_pct, etau_comp, "s-", color="#7b3294", lw=2.5, ms=6.0, label=r"Pareja acoplada CEGIS-LP $(B_{G,\theta}, B_{B,\theta})$ ($\mathbb{E}[\tau] \leq 35.1\text{ a }38.8$)")
+    ax1.semilogy(p_pct, etau_comp, "s-", color="#7b3294", lw=2.5, ms=6.0, label=r"Pareja acoplada CEGIS-LP $(B_{G,\theta}, B_{B,\theta})$ ($\mathbb{E}[\tau] \leq 35.2\text{ a }38.8$)")
     ax1.semilogy(p_pct, etau_vfi, "^-", color="#1b7837", lw=2.2, ms=6.0, label=r"Óptimo verdadero VFI ($\max_M \mathbb{E}_{\mathrm{VFI}}[\tau] \approx 5.81\text{ a }5.92$)")
 
     ax1.annotate(

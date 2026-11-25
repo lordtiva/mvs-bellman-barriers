@@ -26,9 +26,9 @@ Código, formalización mecanizada en **Lean 4** (`13` módulos, `0` `sorry`), c
    - **Proposición 6 (`Caso 6`, pruebas de estrés en cajas anchas):** `MR_Box_7_1` ($8$ subcajas, $29.9$ s síntesis / $10.66$ s re-verificación) y `Macro_10x_Box` ($128$ subcajas, $745.7$ s síntesis / $160.21$ s re-verificación), ambos con $`T_{\text{full}} = 6`$. Verificación independiente automatizada en `.github/workflows/verify.yml`.
 
 3. **Teoría converso-estocástica, Markov comprimido y ruina endógena (`Casos 2, 3 y 5`):**
-   - **Teorema 3 (converso de Doob-FPBB bajo (A1)–(A3)):** equivalencia bajo compacidad entre escape casi seguro con tiempo esperado uniformemente acotado y existencia de super-barreras de supermartingala con brecha $`\varepsilon_0 > 0`$, acopladas directamente a la selección endógena de políticas óptimas.
+   - **Teorema 3 (converso de Doob-FPBB bajo (A1)–(A3)):** equivalencia bajo compacidad entre escape casi seguro con tiempo esperado uniformemente acotado y existencia de barreras de permanencia de supermartingala con brecha $`\varepsilon_0 > 0`$, acopladas directamente a la selección endógena de políticas óptimas.
    - **Proposición 7 (`Caso 2`, ruina exógena $p \in [0\%, 2.0\%]$):** 60 bandas contiguas sobre $`\tilde{\beta}_p \in [0.950502, 0.9701]`$ con invariancia exacta a $`V_{\text{ruin}}`$ y plazo comprimido **$`T^*_{\text{CEGIS}}(2.0\%) = 5`$** (supervivencia garantizada $\ge 90.39\%$, exacto $0.903921$).
-   - **Proposición 8 (`Caso 3`, Markov $(G, B)$ hasta $p = 12\%$):** parejas acopladas de permanencia $`(B_{G,\theta}, B_{B,\theta})`$ comprimen la cota esperada de escape $\mathbb{E}[\tau]$ de **$1\,480\text{–}13\,323$** a **$35.1\text{–}38.8$ períodos** ($`\varepsilon_0^{\text{comp}} \ge 0.3869`$, frente a $`\max_{M \times \{G,B\}} \mathbb{E}_{\text{VFI}}[\tau] \approx 5.81\text{–}5.92`$), con las **1,054 hojas** continuas de $`H_{1,B}`$ (partición 4D $`4_{A_G} \times 2_{A_B} \times 2_q \times 2_\eta`$) exportadas y re-auditadas.
+   - **Proposición 8 (`Caso 3`, Markov $(G, B)$ hasta $p = 12\%$):** parejas acopladas de permanencia $`(B_{G,\theta}, B_{B,\theta})`$ comprimen la cota esperada de escape $\mathbb{E}[\tau]$ de **$1\,480\text{–}13\,323$** a **$35.2\text{–}38.8$ períodos** ($`\varepsilon_0^{\text{comp}} \ge 0.3869`$, frente a $`\max_{M \times \{G,B\}} \mathbb{E}_{\text{VFI}}[\tau] \approx 5.81\text{–}5.92`$), con las **1,054 hojas** continuas de $`H_{1,B}`$ (partición 4D $`4_{A_G} \times 2_{A_B} \times 2_q \times 2_\eta`$) exportadas y re-auditadas.
    - **Proposición 9 (`Caso 5`, ruina endógena $`p(K) = p\mathbf{1}_{K<0.28},\; V_{\text{ruin}} = -60`$):** *huida endógena hacia la seguridad* en VFI ($`\tau_{\text{VFI}}: 4 \to 3`$) y certificados CEGIS-LP con $T^* = 5$ (supervivencia garantizada $\ge 90.39\%$ en $p = 2\%$).
 
 4. **Formalización mecanizada en Lean 4 ([`lean/`](lean/README.md)):**
@@ -117,7 +117,7 @@ Ver [`lean/README.md`](lean/README.md) para el mapa detallado de los 13 módulos
   title        = {Barreras de Bellman Afiladas, Equivalencia Asintótica y Supervivencia Estocástica Certificada bajo Rendimientos Crecientes},
   year         = 2026,
   publisher    = {Zenodo},
-  version      = {v1.0.1},
+  version      = {v2.0.2},
   doi          = {10.5281/zenodo.24467170},
   url          = {https://doi.org/10.5281/zenodo.24467170}
 }
